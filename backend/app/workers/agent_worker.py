@@ -28,7 +28,7 @@ from app.models import AgentArtifact, NodeRun, WorkflowRun
 from app.orchestration.bus import Bus, RabbitRedisBus
 from app.orchestration.engine import RunContext
 from app.orchestration.events import commit_and_publish, emit, lock_run
-from app.services.execution import render_template, resolve_value
+from app.services.execution import render_template, resolve_refs, resolve_value
 from app.tools.registry import SandboxClient, ToolContext, ToolError, execute_tool, write_artifact_file
 from app.workers.messages import AgentTask, AgentTaskResult, OrchestratorCommand
 
@@ -229,6 +229,9 @@ class AgentWorker:
                                          "tools": config.get("tools") or [],
                                          "model": (config.get("provider") or {}).get("model") if kind == "llm" else None})
             if kind == "scripted":
+                config = {**config, "steps": [
+                    {**step, "args": resolve_refs(step.get("args") or {}, eval_ctx)} for step in config.get("steps") or []
+                ]}
                 await report("Scripted agent (deterministic, no LLM) started")
             context = AgentContext(
                 run_id=run_id, node_id=node_run.node_id, node_run_id=node_run_id, config=config,

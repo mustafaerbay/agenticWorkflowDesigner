@@ -264,6 +264,10 @@ class WorkflowValidator:
                     tool = step.get("tool") if isinstance(step, dict) else None
                     if tool not in allowed:
                         err(Issue("tool_permission", f"Step tool '{tool}' is not in the agent's tool permissions", node_id=nid))
+                    args = step.get("args") if isinstance(step, dict) else None
+                    for value in (args or {}).values() if isinstance(args, dict) else []:
+                        if isinstance(value, dict) and set(value) == {"ref"}:
+                            self._check_ref(graph, nid, str(value["ref"]), err, warn)
             self._check_retry(config, nid, err)
             self._check_int(config, "timeout_seconds", 1, 3600, nid, err)
             self._check_int(config, "max_steps", 1, 50, nid, err)

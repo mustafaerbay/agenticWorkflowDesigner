@@ -121,6 +121,18 @@ def resolve_value(value: Any, ctx: EvalContext) -> Any:
     return value
 
 
+def resolve_refs(value: Any, ctx: EvalContext) -> Any:
+    """Resolve only explicit {"ref": ...} objects; drop arguments that resolve to null."""
+    if isinstance(value, dict) and set(value.keys()) == {"ref"}:
+        return ctx.resolve(value["ref"])
+    if isinstance(value, dict):
+        resolved = {k: resolve_refs(v, ctx) for k, v in value.items()}
+        return {k: v for k, v in resolved.items() if v is not None}
+    if isinstance(value, list):
+        return [resolve_refs(v, ctx) for v in value]
+    return value
+
+
 def render_template(template: str, ctx: EvalContext) -> str:
     def replace(match: re.Match[str]) -> str:
         try:

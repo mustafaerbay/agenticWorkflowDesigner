@@ -41,7 +41,7 @@ async def test_seeded_examples_and_tools(api):
     tools = {t["name"] for t in (await api.get("/api/tools", headers=headers)).json()}
     assert {"run_tests", "write_file", "git_diff", "generate_patch"} <= tools
     presets = {p["key"] for p in (await api.get("/api/agents/presets", headers=headers)).json()}
-    assert presets == {"planning", "developer", "testing", "code_review", "devops", "documentation"}
+    assert presets == {"planning", "developer", "testing", "code_review", "devops", "documentation", "repo_fetch"}
 
 
 async def test_workflow_crud_versioning_and_validation(api):

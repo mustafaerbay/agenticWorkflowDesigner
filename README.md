@@ -56,6 +56,16 @@ workflows are seeded:
   scripted agents. The test run fails for real, the scripted fixer applies a patch, the tests
   pass, the review condition checks the diff and coverage, you approve, and patch and report
   artifacts are produced.
+- **Fetch repository (scripted, no LLM)**: the *Repository Fetch Agent* preset clones
+  `input.repo_url` (optional branch or tag `input.repo_ref`) into the workspace path
+  `input.work_path`. Drop the preset from the editor palette into any workflow to do the same.
+
+The `git_clone` tool behind the Repository Fetch Agent runs in the worker, because the sandbox has
+no Internet access. It accepts only public HTTPS URLs from `GIT_CLONE_ALLOWED_HOSTS` and rejects
+credentials. Clones are shallow, with no hooks, submodules or LFS, and are limited in size and file
+count. The files are extracted into the sandbox with a path-safe filter and committed as the
+workspace baseline, so later `git_diff` and patches show only the agents' changes. Private
+repositories are not supported yet.
 
 ## Verify
 

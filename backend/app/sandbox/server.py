@@ -7,18 +7,20 @@ Commands are argv-only (no shell), allow-listed, time- and resource-limited.
 
 import asyncio
 import hmac
+import io
 import json
 import os
 import re
 import resource
 import shutil
 import signal
+import tarfile
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
@@ -192,6 +194,34 @@ async def init_workspace(req: InitRequest) -> dict[str, Any]:
         if result["exit_code"] != 0:
             raise HTTPException(status_code=500, detail=f"git setup failed: {result['stderr'][-500:]}")
     return {"created": True, "path": str(root), "template": req.template}
+
+
+@app.post("/workspace/import", dependencies=[Depends(require_token)])
+async def import_archive(request: Request, workspace: str, path: str, label: str = "imported files") -> dict[str, Any]:
+    """Extract a tar.gz into an empty workspace directory and commit it as the new baseline."""
+    root = workspace_root(workspace)
+    if not (root / ".git").exists():
+        raise HTTPException(status_code=409, detail="workspace not initialised")
+    target = safe_path(workspace, path or ".")
+    if target.exists() and (not target.is_dir() or any(p.name != ".git" for p in target.iterdir())):
+        raise HTTPException(status_code=409, detail=f"target path '{path}' already exists and is not empty")
+    body = await request.body()
+    if len(body) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="archive too large")
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tar:
+            # The "data" filter rejects absolute paths, '..', links escaping the target and device files.
+            tar.extractall(target, filter="data")
+    except (tarfile.TarError, OSError) as exc:
+        shutil.rmtree(target, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"invalid archive: {exc}") from exc
+    for argv in (["git", "add", "-A"], ["git", "commit", "-q", "--allow-empty", "-m", f"Import {label[:200]}"]):
+        result = await run_argv(root.resolve(), argv, 120)
+        if result["exit_code"] != 0:
+            raise HTTPException(status_code=500, detail=f"git baseline commit failed: {result['stderr'][-500:]}")
+    files = sum(1 for p in target.rglob("*") if p.is_file() and ".git" not in p.relative_to(root.resolve()).parts)
+    return {"path": path, "files": files}
 
 
 @app.post("/exec", dependencies=[Depends(require_token)])

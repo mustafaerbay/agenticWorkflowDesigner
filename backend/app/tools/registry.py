@@ -43,6 +43,21 @@ class SandboxClient:
             raise ToolError(f"sandbox error ({response.status_code}): {detail}")
         return response.json()
 
+    async def upload(self, path: str, params: dict[str, str], content: bytes, timeout: float = 300) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=timeout, transport=self.transport) as client:
+            try:
+                response = await client.post(path, params=params, content=content, headers={
+                    "X-Sandbox-Token": self.token, "Content-Type": "application/gzip"})
+            except httpx.HTTPError as exc:
+                raise ToolError(f"sandbox unreachable: {exc}") from exc
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail")
+            except ValueError:
+                detail = response.text[:300]
+            raise ToolError(f"sandbox error ({response.status_code}): {detail}")
+        return response.json()
+
 
 @dataclass
 class ToolContext:
@@ -148,6 +163,23 @@ async def _generate_patch(ctx: ToolContext, args: dict[str, Any]) -> dict[str, A
     return {**artifact, "files_changed": result["files_changed"], "has_changes": result["has_changes"]}
 
 
+async def _git_clone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.tools.git_fetch import FetchError, fetch_repository
+
+    path = str(args.get("path") or "repo").strip().strip("/") or "."
+    await ctx.ensure_workspace()
+    try:
+        repo = await fetch_repository(args["repo_url"], args.get("ref"), int(args.get("depth") or 1))
+    except FetchError as exc:
+        raise ToolError(str(exc)) from exc
+    label = f"{args['repo_url']}@{repo.commit[:12]}"
+    imported = await ctx.sandbox.upload(
+        "/workspace/import", {"workspace": ctx.run_id, "path": path, "label": label}, repo.archive
+    )
+    return {"success": True, "repo_url": args["repo_url"], "ref": args.get("ref"), "commit": repo.commit,
+            "path": path, "files": imported["files"], "bytes": repo.bytes}
+
+
 async def _create_report(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if ctx.save_artifact is None:
         raise ToolError("artifact storage unavailable")
@@ -206,6 +238,16 @@ TOOLS: dict[str, ToolSpec] = {
         ToolSpec("generate_patch", "Store the workspace changes as a patch artifact.",
                  _obj({"name": {"type": "string"}}), _generate_patch,
                  _obj({**ARTIFACT_SCHEMA, "files_changed": {"type": "array"}, "has_changes": {"type": "boolean"}})),
+        ToolSpec("git_clone",
+                 "Fetch a public HTTPS git repository (branch or tag) into a workspace path. The path must be new or empty.",
+                 _obj({"repo_url": {"type": "string", "minLength": 1},
+                       "ref": {"type": "string"},
+                       "path": {"type": "string"},
+                       "depth": {"type": "integer", "minimum": 1, "maximum": 50}}, ["repo_url"]),
+                 _git_clone,
+                 _obj({"success": {"type": "boolean"}, "repo_url": {"type": "string"}, "ref": {"type": ["string", "null"]},
+                       "commit": {"type": "string"}, "path": {"type": "string"}, "files": {"type": "integer"},
+                       "bytes": {"type": "integer"}})),
         ToolSpec("create_report", "Create a Markdown development report artifact (auto-generated if no content).",
                  _obj({"title": {"type": "string"}, "content": {"type": "string"}, "name": {"type": "string"}}),
                  _create_report, _obj({**ARTIFACT_SCHEMA, "title": {"type": "string"}, "preview": {"type": "string"}})),

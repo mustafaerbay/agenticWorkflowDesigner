@@ -53,6 +53,16 @@ class Settings(BaseSettings):
         "diff",
     ]
     sandbox_command_timeout: int = 120
+
+    # git_clone tool: public HTTPS repositories from these hosts only (comma-separated).
+    git_clone_allowed_hosts: str = "github.com,gitlab.com,bitbucket.org"
+    git_clone_max_mb: int = 200
+    git_clone_max_files: int = 20_000
+    git_clone_timeout: int = 180
+
+    @property
+    def git_clone_hosts(self) -> set[str]:
+        return {h.strip().lower() for h in self.git_clone_allowed_hosts.split(",") if h.strip()}
     sandbox_max_output_bytes: int = 200_000
 
     # Engine

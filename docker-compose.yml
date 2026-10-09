@@ -149,6 +149,7 @@ services:
     environment:
       <<: *backend-env
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      GIT_CLONE_ALLOWED_HOSTS: ${GIT_CLONE_ALLOWED_HOSTS:-github.com,gitlab.com,bitbucket.org}
     volumes:
       - artifacts:/artifacts
     networks: [backend, sandbox]

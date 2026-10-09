@@ -52,7 +52,8 @@ export type AgentPresetKey =
   | "testing"
   | "code_review"
   | "devops"
-  | "documentation";
+  | "documentation"
+  | "repo_fetch";
 
 export interface ScriptedStep {
   tool: string;

@@ -149,6 +149,22 @@ PRESETS: dict[str, dict[str, Any]] = {
             "output_schema": None,
         },
     },
+    "repo_fetch": {
+        "name": "Repository Fetch Agent",
+        "description": "Scripted (no LLM): clones input.repo_url (optional input.repo_ref branch/tag) into input.work_path.",
+        "config": {
+            "kind": "scripted",
+            "preset": "repo_fetch",
+            "tools": ["git_clone", "list_files"],
+            "timeout_seconds": 300,
+            "retry": {"max_attempts": 2, "backoff_seconds": 5},
+            "steps": [
+                {"tool": "git_clone", "args": {"repo_url": {"ref": "input.repo_url"},
+                                               "ref": {"ref": "input.repo_ref"},
+                                               "path": {"ref": "input.work_path"}}},
+            ],
+        },
+    },
 }
 
 

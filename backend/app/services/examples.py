@@ -143,6 +143,36 @@ def _pipeline(scripted: bool) -> dict[str, Any]:
             "settings": {"max_loop_iterations": 5, "max_total_steps": 60, "max_duration_seconds": 3600}}
 
 
+def _fetch_repository() -> dict[str, Any]:
+    from app.agents.presets import PRESETS
+
+    fetch_config = dict(PRESETS["repo_fetch"]["config"])
+    return {
+        "nodes": [
+            node("start", "start", "Repository input", 0, 100, {
+                "default_input": {"repo_url": "https://github.com/octocat/Hello-World", "repo_ref": "master",
+                                  "work_path": "repo"},
+                "input_schema": {"type": "object", "properties": {
+                    "repo_url": {"type": "string"}, "repo_ref": {"type": "string"}, "work_path": {"type": "string"}},
+                    "required": ["repo_url"]},
+            }),
+            node("repo_fetch_agent", "agent", "Repository Fetch Agent (scripted, no LLM)", 260, 100, fetch_config),
+            node("fetched", "condition", "Fetched?", 520, 100, {
+                "branches": [{"handle": "ok", "label": "Fetched",
+                              "rule": {"op": "exists", "left": ref("repo_fetch_agent.output.last_result.commit")}}],
+                "default_handle": "missing",
+            }),
+            node("list_repo", "tool", "List fetched files", 780, 40, {"tool": "list_files", "args": {"path": ref("input.work_path")}}),
+            node("end", "end", "Done", 1040, 40),
+            node("fail", "fail", "Fetch failed", 780, 220, {"message": "Repository was not fetched"}),
+        ],
+        "edges": [edge("start", "repo_fetch_agent"), edge("repo_fetch_agent", "fetched"),
+                  edge("fetched", "list_repo", "ok", "Fetched"), edge("fetched", "fail", "missing", "Missing"),
+                  edge("list_repo", "end")],
+        "settings": {"max_loop_iterations": 3, "max_total_steps": 20, "max_duration_seconds": 900},
+    }
+
+
 EXAMPLES: list[dict[str, Any]] = [
     {
         "name": "Autonomous Development Pipeline",
@@ -155,5 +185,11 @@ EXAMPLES: list[dict[str, Any]] = [
         "description": "Same pipeline with scripted, deterministic agents (no LLM). Tests, diff, branching, loop, "
                        "approval and artifacts are all real; only the agents' decisions are pre-scripted.",
         "definition": _pipeline(scripted=True),
+    },
+    {
+        "name": "Fetch repository (scripted, no LLM)",
+        "description": "Repository Fetch Agent clones input.repo_url (branch/tag input.repo_ref) into the workspace "
+                       "path input.work_path, then lists the fetched files.",
+        "definition": _fetch_repository(),
     },
 ]
