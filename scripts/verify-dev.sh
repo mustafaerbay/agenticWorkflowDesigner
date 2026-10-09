@@ -17,13 +17,13 @@ fail() { printf '[FAIL] %s\n' "$*"; failures=$((failures + 1)); }
 dc() { docker compose -p "$PROJECT" "$@"; }
 
 echo "==> Gate A: service health"
-dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}\t{{.Ports}}'
+dc ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
 for svc in postgres redis rabbitmq api orchestrator worker sandbox web; do
   ids=$(dc ps -q "$svc" || true)
   if [ -z "$ids" ]; then fail "$svc: not running"; continue; fi
   for id in $ids; do
     health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id")
-    if [ "$health" = "healthy" ]; then pass "$svc ($id): healthy"; else fail "$svc ($id): $health"; fi
+    if [ "$health" = "healthy" ]; then pass "$svc (${id:0:12}): healthy"; else fail "$svc (${id:0:12}): $health"; fi
   done
 done
 migrate_exit=$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq migrate | head -n1)" 2>/dev/null || echo missing)

@@ -59,7 +59,7 @@ log "Starting application services"
 docker compose -p "$PROJECT" up -d --wait --wait-timeout "$HEALTH_TIMEOUT"
 
 log "Status"
-docker compose -p "$PROJECT" ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}\t{{.Ports}}'
+docker compose -p "$PROJECT" ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
 set -a; . ./.env; set +a
 curl -fsS --max-time 10 "http://127.0.0.1:${WEB_PORT:-3000}/api/ready" && echo
 echo "Deployed commit: $SHA"

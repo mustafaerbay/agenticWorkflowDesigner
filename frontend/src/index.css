@@ -1,0 +1,245 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: oklch(0.985 0.002 260);
+  --foreground: oklch(0.21 0.02 265);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 265);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 265);
+  --primary: oklch(0.52 0.2 270);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.955 0.006 265);
+  --secondary-foreground: oklch(0.27 0.02 265);
+  --muted: oklch(0.96 0.005 265);
+  --muted-foreground: oklch(0.52 0.02 265);
+  --accent: oklch(0.95 0.012 270);
+  --accent-foreground: oklch(0.27 0.03 270);
+  --destructive: oklch(0.58 0.22 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --success: oklch(0.6 0.15 155);
+  --warning: oklch(0.75 0.16 75);
+  --info: oklch(0.6 0.17 250);
+  --border: oklch(0.91 0.006 265);
+  --input: oklch(0.89 0.008 265);
+  --ring: oklch(0.6 0.18 270);
+  --sidebar: oklch(0.975 0.004 265);
+  --canvas: oklch(0.975 0.003 265);
+  --canvas-dot: oklch(0.82 0.01 265);
+  --radius: 0.6rem;
+}
+
+.dark {
+  --background: oklch(0.16 0.01 265);
+  --foreground: oklch(0.95 0.005 265);
+  --card: oklch(0.2 0.012 265);
+  --card-foreground: oklch(0.95 0.005 265);
+  --popover: oklch(0.21 0.012 265);
+  --popover-foreground: oklch(0.95 0.005 265);
+  --primary: oklch(0.65 0.18 272);
+  --primary-foreground: oklch(0.15 0.01 265);
+  --secondary: oklch(0.25 0.012 265);
+  --secondary-foreground: oklch(0.92 0.005 265);
+  --muted: oklch(0.24 0.01 265);
+  --muted-foreground: oklch(0.68 0.015 265);
+  --accent: oklch(0.27 0.02 270);
+  --accent-foreground: oklch(0.95 0.005 265);
+  --destructive: oklch(0.62 0.21 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --success: oklch(0.7 0.15 155);
+  --warning: oklch(0.8 0.15 80);
+  --info: oklch(0.68 0.15 250);
+  --border: oklch(0.29 0.012 265);
+  --input: oklch(0.32 0.014 265);
+  --ring: oklch(0.65 0.18 272);
+  --sidebar: oklch(0.18 0.011 265);
+  --canvas: oklch(0.17 0.01 265);
+  --canvas-dot: oklch(0.33 0.012 265);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-canvas: var(--canvas);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: "Inter", "InterVariable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --animate-pulse-ring: pulse-ring 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-in: fade-in 150ms ease-out;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--info) 55%, transparent); }
+    70% { box-shadow: 0 0 0 10px color-mix(in oklch, var(--info) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--info) 0%, transparent); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(2px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes shimmer {
+    from { background-position: -200% 0; }
+    to { background-position: 200% 0; }
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* ---------------------------------------------------------------- React Flow */
+.react-flow {
+  --xy-background-color: var(--canvas);
+  --xy-node-border-radius: var(--radius);
+  --xy-edge-stroke: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
+  --xy-edge-stroke-selected: var(--primary);
+  --xy-edge-stroke-width: 1.6;
+  --xy-connectionline-stroke: var(--primary);
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: color-mix(in oklch, var(--background) 70%, transparent);
+  --xy-minimap-node-background-color: var(--muted);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-color-hover: var(--foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-selection-background-color: color-mix(in oklch, var(--primary) 10%, transparent);
+  --xy-selection-border: 1px dashed var(--primary);
+  --xy-handle-background-color: var(--card);
+  --xy-handle-border-color: var(--muted-foreground);
+  --xy-edge-label-background-color: var(--card);
+  --xy-edge-label-color: var(--foreground);
+  --xy-attribution-background-color: transparent;
+}
+.react-flow__controls {
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.react-flow__minimap {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border-width: 2px;
+  transition: transform 120ms ease;
+}
+.react-flow__handle:hover {
+  transform: scale(1.3);
+  border-color: var(--primary);
+}
+.react-flow__handle.handle-labeled {
+  width: 12px;
+  height: 12px;
+}
+.react-flow__node {
+  border-radius: var(--radius);
+}
+.react-flow__node.selected > div,
+.react-flow__node:focus-visible > div {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.react-flow__node:focus-visible {
+  outline: none;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 2.4;
+}
+.react-flow__edge.edge-invalid .react-flow__edge-path {
+  stroke: var(--destructive);
+  stroke-width: 2.4;
+}
+.react-flow__edge.edge-traversed .react-flow__edge-path {
+  stroke: var(--info);
+  stroke-width: 2.6;
+}
+.react-flow__edge.edge-fired .react-flow__edge-path {
+  stroke: color-mix(in oklch, var(--success) 80%, transparent);
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--muted) 25%, color-mix(in oklch, var(--muted) 60%, var(--background)) 50%, var(--muted) 75%);
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.react-flow__node.node-invalid > div {
+  outline: 2px solid var(--destructive);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px color-mix(in oklch, var(--destructive) 15%, transparent);
+}
+kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 3px;
+  background: var(--card);
+}
