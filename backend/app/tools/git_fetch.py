@@ -24,7 +24,13 @@ REF_PATTERN = re.compile(r"^[A-Za-z0-9._/\-]{1,200}$")
 
 
 class FetchError(Exception):
-    pass
+    def __init__(self, message: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+PERMANENT_GIT_ERRORS = ("not found", "does not exist", "could not find remote branch", "authentication failed",
+                        "could not read username")
 
 
 @dataclass
@@ -86,9 +92,11 @@ async def _run(argv: list[str], cwd: str, env: dict[str, str], timeout: float) -
         except ProcessLookupError:
             pass
         await proc.communicate()
-        raise FetchError(f"git timed out after {int(timeout)}s") from exc
+        raise FetchError(f"git timed out after {int(timeout)}s", retryable=True) from exc
     if proc.returncode != 0:
-        raise FetchError(f"git failed: {stderr.decode(errors='replace').strip()[-500:]}")
+        message = stderr.decode(errors="replace").strip()[-500:]
+        permanent = any(marker in message.lower() for marker in PERMANENT_GIT_ERRORS)
+        raise FetchError(f"git failed: {message}", retryable=not permanent)
     return stdout.decode(errors="replace")
 
 

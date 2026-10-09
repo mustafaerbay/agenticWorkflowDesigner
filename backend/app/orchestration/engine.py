@@ -426,6 +426,12 @@ class Engine:
         retry = config.get("retry") or {}
         max_attempts = int(retry.get("max_attempts") or 1)
         backoff = float(retry.get("backoff_seconds") or 0)
+        if not nr.retryable:
+            if nr.attempt < max_attempts:
+                nr.logs = [*(nr.logs or []), {"ts": now().isoformat(), "level": "warning",
+                                              "message": "Not retried: this error cannot be fixed by retrying"}]
+            self.fail_run(ctx, f"Node '{nr.label}' failed (not retryable): {nr.error or 'unknown error'}")
+            return
         if nr.attempt < max_attempts:
             if ctx.run.steps + 1 > ctx.settings["max_total_steps"]:
                 self.fail_run(ctx, f"limit_exceeded: max_total_steps={ctx.settings['max_total_steps']}")

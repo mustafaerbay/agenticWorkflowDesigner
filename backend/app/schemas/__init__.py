@@ -102,6 +102,7 @@ class NodeRunOut(BaseModel):
     usage: dict[str, Any] | None
     agent_kind: str | None
     model: str | None
+    retryable: bool = True
 
 
 class ArtifactOut(BaseModel):

@@ -37,7 +37,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { api, errorMessage, queryKeys } from "@/services/api";
 import { downloadJson, formatRelative, isPlainObject, slugify } from "@/lib/utils";
 import type { WorkflowExport, WorkflowSummary } from "@/types";
-import { defaultInputOf, emptyDefinition } from "@/workflow/serialization";
+import { emptyDefinition } from "@/workflow/serialization";
 
 function useDebounced<T>(v: T, ms: number): T {
   const [d, setD] = useState(v);
@@ -113,7 +113,7 @@ function RunFromList({ wf, onClose }: { wf: WorkflowSummary; onClose: () => void
       onOpenChange={(o) => !o && onClose()}
       workflowId={wf.id}
       workflowName={wf.name}
-      defaultInput={full.data ? defaultInputOf(full.data.definition) : {}}
+      definition={full.data?.definition}
     />
   );
 }

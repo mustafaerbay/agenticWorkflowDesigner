@@ -154,7 +154,34 @@ async def test_join_any_fires_once(sessions, bus, orchestrator, worker):
     assert statuses(nrs)["after"] == ["COMPLETED"]
 
 
-async def test_retry_policy_bounded(sessions, bus, orchestrator, worker):
+async def test_retryable_failure_is_retried_up_to_budget(sessions, bus, orchestrator):
+    import httpx
+
+    from app.tools.registry import SandboxClient
+    from app.workers.agent_worker import AgentWorker
+
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    broken = AgentWorker(bus, sessions, SandboxClient(base_url="http://sandbox", transport=httpx.MockTransport(unreachable)),
+                         worker_id="broken-worker")
+    wf = {
+        "nodes": [node("start", "start"),
+                  node("flaky", "tool", {"tool": "list_files", "args": {},
+                                         "retry": {"max_attempts": 3, "backoff_seconds": 0}}),
+                  node("end", "end")],
+        "edges": [edge("start", "flaky"), edge("flaky", "end")],
+    }
+    run_id = await start_run(sessions, bus, wf)
+    await drain(bus, orchestrator, broken)
+    run, nrs = await get_run(sessions, run_id)
+    assert run.status == "FAILED"
+    attempts = [(nr.attempt, nr.status, nr.retryable) for nr in nrs if nr.node_id == "flaky"]
+    assert attempts == [(1, "FAILED", True), (2, "FAILED", True), (3, "FAILED", True)]
+    assert "after 3 attempt" in run.error
+
+
+async def test_deterministic_failure_is_not_retried(sessions, bus, orchestrator, worker):
     wf = {
         "nodes": [node("start", "start"),
                   node("broken", "tool", {"tool": "read_file", "args": {"path": "does-not-exist.txt"},
@@ -166,9 +193,26 @@ async def test_retry_policy_bounded(sessions, bus, orchestrator, worker):
     await drain(bus, orchestrator, worker)
     run, nrs = await get_run(sessions, run_id)
     assert run.status == "FAILED"
-    attempts = [(nr.attempt, nr.status) for nr in nrs if nr.node_id == "broken"]
-    assert attempts == [(1, "FAILED"), (2, "FAILED"), (3, "FAILED")]
-    assert "after 3 attempt" in run.error
+    attempts = [(nr.attempt, nr.status, nr.retryable) for nr in nrs if nr.node_id == "broken"]
+    assert attempts == [(1, "FAILED", False)]
+    assert "not retryable" in run.error
+
+
+async def test_missing_run_input_fails_fast_without_retry(sessions, bus, orchestrator, worker):
+    """Reproduces the reported issue: Repository Fetch Agent run with empty input."""
+    from app.agents.presets import PRESETS
+
+    wf = {"nodes": [node("start", "start"),
+                    {"id": "repo_fetch_agent", "type": "agent", "position": {"x": 0, "y": 0},
+                     "data": {"label": "Repository Fetch Agent", "config": dict(PRESETS["repo_fetch"]["config"])}},
+                    node("end", "end")],
+          "edges": [edge("start", "repo_fetch_agent"), edge("repo_fetch_agent", "end")]}
+    run_id = await start_run(sessions, bus, wf, {})
+    await drain(bus, orchestrator, worker)
+    run, nrs = await get_run(sessions, run_id)
+    attempts = [nr for nr in nrs if nr.node_id == "repo_fetch_agent"]
+    assert run.status == "FAILED" and len(attempts) == 1  # preset allows 2 attempts, but retrying cannot help
+    assert "'repo_url' is a required property" in run.error and "not retryable" in run.error
 
 
 async def test_duplicate_task_and_result_delivery_is_idempotent(sessions, bus, orchestrator, worker):

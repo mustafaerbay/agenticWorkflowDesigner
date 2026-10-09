@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import jsonschema
+
 from app.orchestration.conditions import UNARY_OPS, check_rule_structure, collect_refs
 from app.orchestration.graph import NODE_TYPES, TERMINAL_TYPES, Graph, source_handles
 
@@ -260,7 +262,7 @@ class WorkflowValidator:
                 steps = config.get("steps")
                 if not isinstance(steps, list) or not steps:
                     err(Issue("scripted_steps", "Scripted agent needs at least one step", node_id=nid))
-                for step in steps or []:
+                for index, step in enumerate(steps or [], 1):
                     tool = step.get("tool") if isinstance(step, dict) else None
                     if tool not in allowed:
                         err(Issue("tool_permission", f"Step tool '{tool}' is not in the agent's tool permissions", node_id=nid))
@@ -268,6 +270,8 @@ class WorkflowValidator:
                     for value in (args or {}).values() if isinstance(args, dict) else []:
                         if isinstance(value, dict) and set(value) == {"ref"}:
                             self._check_ref(graph, nid, str(value["ref"]), err, warn)
+                    if tool in self.tools:
+                        self._check_tool_args(str(tool), args, nid, f"Step {index} ({tool})", err)
             self._check_retry(config, nid, err)
             self._check_int(config, "timeout_seconds", 1, 3600, nid, err)
             self._check_int(config, "max_steps", 1, 50, nid, err)
@@ -298,6 +302,8 @@ class WorkflowValidator:
                 for value in args.values():
                     if isinstance(value, dict) and "ref" in value:
                         self._check_ref(graph, nid, value["ref"], err, warn)
+                if tool in self.tools:
+                    self._check_tool_args(str(tool), args, nid, f"Tool '{tool}'", err)
             self._check_retry(config, nid, err)
             self._check_int(config, "timeout_seconds", 1, 3600, nid, err)
         elif ntype == "join":
@@ -312,6 +318,33 @@ class WorkflowValidator:
             seconds = config.get("seconds")
             if not isinstance(seconds, int | float) or isinstance(seconds, bool) or not 0 <= seconds <= 86400:
                 err(Issue("delay_seconds", "Delay seconds must be between 0 and 86400", node_id=nid))
+
+    def _check_tool_args(self, tool: str, args: Any, nid: str, where: str, err: Any) -> None:
+        """Required arguments must be bound (literal or {"ref"}); literals must match the parameter type."""
+        schema = self.tools[tool].get("parameters") or {}
+        props: dict[str, Any] = schema.get("properties") or {}
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            err(Issue("tool_args", f"{where}: args must be an object", node_id=nid))
+            return
+        for name in schema.get("required") or []:
+            if args.get(name) is None:
+                err(Issue("missing_tool_arg",
+                          f"{where}: missing required argument '{name}' "
+                          f"(set a value or a reference such as {{\"ref\": \"input.{name}\"}})", node_id=nid))
+        for name, value in args.items():
+            if name not in props:
+                if schema.get("additionalProperties") is False:
+                    err(Issue("unknown_tool_arg", f"{where}: unknown argument '{name}' (expected one of {sorted(props)})",
+                              node_id=nid))
+                continue
+            if value is None or (isinstance(value, dict) and set(value) == {"ref"}):
+                continue  # references are checked separately and resolved at run time
+            try:
+                jsonschema.validate(value, props[name])
+            except jsonschema.ValidationError as exc:
+                err(Issue("invalid_tool_arg", f"{where}: argument '{name}' is invalid: {exc.message}", node_id=nid))
 
     def _check_rule_refs(self, graph: Graph, nid: str, rule: Any, err: Any, warn: Any) -> None:
         if not isinstance(rule, dict):

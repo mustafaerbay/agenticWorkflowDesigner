@@ -37,7 +37,8 @@ class LLMAgent(BaseAgent):
         if not provider.get("base_url") or not provider.get("model"):
             raise AgentExecutionError(
                 "No model provider configured for this agent. Configure one under Model Settings "
-                "(an OpenAI-compatible base URL and model) and run again."
+                "(an OpenAI-compatible base URL and model) and run again.",
+                retryable=False,
             )
         client = LLMClient(provider["base_url"], provider["model"], provider.get("api_key_ref"),
                            float(provider.get("timeout_seconds") or 120))
@@ -124,7 +125,7 @@ class ScriptedAgent(BaseAgent):
                     results.append({"tool": tool, "ok": False, "error": str(exc)})
                     success = False
                     continue
-                raise AgentExecutionError(f"step {i} ({tool}) failed: {exc}") from exc
+                raise AgentExecutionError(f"step {i} ({tool}) failed: {exc}", retryable=exc.retryable) from exc
         output = {"agent_kind": "scripted", "deterministic": True, "success": success, "steps": results}
         if results:
             output["last_result"] = results[-1].get("result")
@@ -136,4 +137,4 @@ def build_agent(kind: str) -> BaseAgent:
         return ScriptedAgent()
     if kind == "llm":
         return LLMAgent()
-    raise AgentExecutionError(f"unknown agent kind {kind!r}")
+    raise AgentExecutionError(f"unknown agent kind {kind!r}", retryable=False)

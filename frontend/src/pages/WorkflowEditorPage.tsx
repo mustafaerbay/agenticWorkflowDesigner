@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker, useParams } from "react-router-dom";
 import { ReactFlowProvider, useReactFlow } from "@xyflow/react";
@@ -33,7 +33,6 @@ import { ConfigPanel } from "@/workflow/editor/ConfigPanel";
 import { addNodeChecked, EditorCanvas } from "@/workflow/editor/EditorCanvas";
 import { Palette } from "@/workflow/editor/Palette";
 import { useEditorStore, type NewNodeSpec } from "@/workflow/editor/store";
-import { defaultInputOf } from "@/workflow/serialization";
 
 function isEditableTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
@@ -100,6 +99,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const togglePalette = useUiStore((s) => s.togglePalette);
   const [showValidation, setShowValidation] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
+  // Snapshot once per opening so the dialog sees a stable definition.
+  const runDefinition = useMemo(() => (runOpen ? useEditorStore.getState().getDefinition() : null), [runOpen]);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const wfQuery = useQuery({ queryKey: queryKeys.workflow(workflowId), queryFn: () => api.getWorkflow(workflowId) });
@@ -354,7 +355,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         onOpenChange={setRunOpen}
         workflowId={workflowId}
         workflowName={name}
-        defaultInput={defaultInputOf(store.getState().getDefinition())}
+        definition={runDefinition}
         beforeRun={async () => {
           if (!store.getState().dirty) return true;
           try {

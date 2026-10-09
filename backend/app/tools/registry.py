@@ -17,7 +17,11 @@ from app.core.config import get_settings
 
 
 class ToolError(Exception):
-    pass
+    """A tool call failed. retryable=False means repeating the same call cannot succeed."""
+
+    def __init__(self, message: str, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class SandboxClient:
@@ -40,7 +44,7 @@ class SandboxClient:
                 detail = response.json().get("detail")
             except ValueError:
                 detail = response.text[:300]
-            raise ToolError(f"sandbox error ({response.status_code}): {detail}")
+            raise ToolError(f"sandbox error ({response.status_code}): {detail}", retryable=response.status_code >= 500)
         return response.json()
 
     async def upload(self, path: str, params: dict[str, str], content: bytes, timeout: float = 300) -> dict[str, Any]:
@@ -55,7 +59,7 @@ class SandboxClient:
                 detail = response.json().get("detail")
             except ValueError:
                 detail = response.text[:300]
-            raise ToolError(f"sandbox error ({response.status_code}): {detail}")
+            raise ToolError(f"sandbox error ({response.status_code}): {detail}", retryable=response.status_code >= 500)
         return response.json()
 
 
@@ -171,7 +175,7 @@ async def _git_clone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     try:
         repo = await fetch_repository(args["repo_url"], args.get("ref"), int(args.get("depth") or 1))
     except FetchError as exc:
-        raise ToolError(str(exc)) from exc
+        raise ToolError(str(exc), retryable=exc.retryable) from exc
     label = f"{args['repo_url']}@{repo.commit[:12]}"
     imported = await ctx.sandbox.upload(
         "/workspace/import", {"workspace": ctx.run_id, "path": path, "label": label}, repo.archive
@@ -264,14 +268,14 @@ async def execute_tool(
 ) -> tuple[dict[str, Any], float]:
     """Run a tool after enforcing permissions and validating arguments."""
     if allowed is not None and name not in allowed:
-        raise ToolError(f"tool '{name}' is not permitted for this agent")
+        raise ToolError(f"tool '{name}' is not permitted for this agent", retryable=False)
     spec = TOOLS.get(name)
     if spec is None:
-        raise ToolError(f"unknown tool '{name}'")
+        raise ToolError(f"unknown tool '{name}'", retryable=False)
     try:
         jsonschema.validate(args, spec.parameters)
     except jsonschema.ValidationError as exc:
-        raise ToolError(f"invalid arguments for '{name}': {exc.message}") from exc
+        raise ToolError(f"invalid arguments for '{name}': {exc.message}", retryable=False) from exc
     started = time.monotonic()
     result = await spec.handler(ctx, args)
     return result, round((time.monotonic() - started) * 1000, 1)

@@ -45,6 +45,7 @@ def node_run_out(nr: NodeRun) -> dict[str, Any]:
         "usage": nr.usage,
         "agent_kind": nr.agent_kind,
         "model": nr.model,
+        "retryable": nr.retryable,
     }
 
 

@@ -65,10 +65,10 @@ class AgentWorker:
         heartbeat = asyncio.create_task(self._heartbeat(task))
         cancelled = asyncio.Event()
         try:
-            result, error = await self._execute(task, node_run, run, cancelled)
+            result, error, retryable = await self._execute(task, node_run, run, cancelled)
         finally:
             heartbeat.cancel()
-        return await self._finish(task, result, error)
+        return await self._finish(task, result, error, retryable)
 
     # -- claim / heartbeat / finish -------------------------------------------
 
@@ -123,7 +123,9 @@ class AgentWorker:
             except Exception:
                 log.warning("heartbeat failed", exc_info=True)
 
-    async def _finish(self, task: AgentTask, result: AgentResult | None, error: str | None) -> str:
+    async def _finish(
+        self, task: AgentTask, result: AgentResult | None, error: str | None, retryable: bool = True
+    ) -> str:
         async with self.sessions() as session:
             run = await lock_run(session, task.execution_id)
             node_run = await session.get(NodeRun, uuid.UUID(task.task_id), with_for_update=True,
@@ -148,8 +150,9 @@ class AgentWorker:
             else:
                 node_run.status = "FAILED"
                 node_run.error = error
+                node_run.retryable = retryable
                 node_run.logs = [*node_run.logs, self._log("error", error or "unknown error")]
-                data.update(status="FAILED", error=error)
+                data.update(status="FAILED", error=error, retryable=retryable)
                 emit(session, run, "node.failed", node_id=node_run.node_id, node_run_id=node_run.id, data=data)
             message = AgentTaskResult(
                 execution_id=task.execution_id,
@@ -175,7 +178,7 @@ class AgentWorker:
 
     async def _execute(
         self, task: AgentTask, node_run: NodeRun, run: WorkflowRun, cancelled: asyncio.Event
-    ) -> tuple[AgentResult | None, str | None]:
+    ) -> tuple[AgentResult | None, str | None, bool]:
         config = run.effective_config.get(node_run.node_id) or {}
         timeout = float(config.get("timeout_seconds") or 300)
         async with self.sessions() as session:
@@ -214,7 +217,7 @@ class AgentWorker:
                         execute_tool(config.get("tool"), args, tool_ctx, None), timeout=timeout
                     )
                     entry.update(result=output, error=None, duration_ms=duration)
-                    return AgentResult(output), None
+                    return AgentResult(output), None, True
                 except ToolError as exc:
                     entry.update(result=None, error=str(exc), duration_ms=None)
                     raise
@@ -239,14 +242,14 @@ class AgentWorker:
                 record_tool_call=record_tool_call, is_cancelled=is_cancelled,
             )
             agent = build_agent(kind)
-            return await asyncio.wait_for(agent.execute(context), timeout=timeout), None
+            return await asyncio.wait_for(agent.execute(context), timeout=timeout), None, True
         except TimeoutError:
-            return None, f"Timed out after {int(timeout)}s"
+            return None, f"Timed out after {int(timeout)}s", True
         except (AgentExecutionError, ToolError) as exc:
-            return None, str(exc)
+            return None, str(exc), exc.retryable
         except Exception as exc:  # unexpected bug: record it rather than crash the worker
             log.exception("agent execution crashed", extra={"task_id": task.task_id})
-            return None, f"Internal error: {type(exc).__name__}: {exc}"
+            return None, f"Internal error: {type(exc).__name__}: {exc}", True
 
     async def _set_input(self, task: AgentTask, value: dict[str, Any]) -> None:
         async with self.sessions() as session:

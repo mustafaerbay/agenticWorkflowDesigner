@@ -208,6 +208,8 @@ class NodeRun(Base):
     agent_kind: Mapped[str | None] = mapped_column(String(20))
     model: Mapped[str | None] = mapped_column(String(200))
     routed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # False when the failure is deterministic (bad arguments, permissions...) and retrying cannot help.
+    retryable: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     claimed_by: Mapped[str | None] = mapped_column(String(200))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

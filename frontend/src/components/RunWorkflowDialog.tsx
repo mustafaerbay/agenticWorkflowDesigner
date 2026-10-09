@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Play } from "lucide-react";
@@ -9,23 +9,25 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError, queryKeys } from "@/services/api";
+import { useTools } from "@/services/queries";
+import { missingRequired, runInputSpec } from "@/workflow/runInputs";
 import { isPlainObject, parseJson, prettyJson } from "@/lib/utils";
-import type { Issue, JSONObject } from "@/types";
+import type { Issue, JSONObject, WorkflowDefinition } from "@/types";
 
 export function RunWorkflowDialog({
   open,
   onOpenChange,
   workflowId,
   workflowName,
-  defaultInput,
+  definition,
   beforeRun,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   workflowId: string;
   workflowName: string;
-  /** Prefill (start node default_input). */
-  defaultInput: unknown;
+  /** Used to prefill the input (start default_input + required fields) and check required fields. */
+  definition: WorkflowDefinition | null | undefined;
   /** e.g. save unsaved editor changes first; return false to abort */
   beforeRun?: () => Promise<boolean>;
 }) {
@@ -34,14 +36,20 @@ export function RunWorkflowDialog({
   const [issues, setIssues] = useState<Issue[]>([]);
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const tools = useTools();
+  const spec = useMemo(() => runInputSpec(definition, tools.data ?? []), [definition, tools.data]);
+  const edited = useRef(false);
 
   useEffect(() => {
-    if (open) {
-      setText(prettyJson(defaultInput ?? {}) || "{}");
-      setError(null);
-      setIssues([]);
-    }
-  }, [open, defaultInput]);
+    edited.current = false;
+    setError(null);
+    setIssues([]);
+  }, [open]);
+
+  useEffect(() => {
+    // Refresh the prefill (e.g. once tools load) until the user starts editing.
+    if (open && !edited.current) setText(prettyJson(spec.prefill) || "{}");
+  }, [open, spec]);
 
   const run = useMutation({
     mutationFn: async (input: JSONObject) => {
@@ -69,6 +77,10 @@ export function RunWorkflowDialog({
     const r = parseJson(text.trim() || "{}");
     if (!r.ok) return setError(`Invalid JSON: ${r.error}`);
     if (!isPlainObject(r.value)) return setError("Input must be a JSON object");
+    const missing = missingRequired(spec, r.value as JSONObject);
+    if (missing.length > 0) {
+      return setError(`Missing required input${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`);
+    }
     setError(null);
     setIssues([]);
     run.mutate(r.value as JSONObject);
@@ -90,12 +102,41 @@ export function RunWorkflowDialog({
             className="font-mono text-xs"
             value={text}
             aria-invalid={!!error}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              edited.current = true;
+              setText(e.target.value);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
             }}
           />
-          {error && <p className="text-xs text-destructive">{error}</p>}
+          {(spec.required.length > 0 || spec.optional.length > 0) && (
+            <div className="space-y-0.5 text-xs text-muted-foreground" data-testid="run-input-hints">
+              {spec.required.length > 0 && (
+                <p>
+                  Required:{" "}
+                  {spec.required.map((k, i) => (
+                    <span key={k}>
+                      {i > 0 && ", "}
+                      <code className="font-mono text-foreground">{k}</code>
+                    </span>
+                  ))}
+                </p>
+              )}
+              {spec.optional.length > 0 && (
+                <p>
+                  Optional:{" "}
+                  {spec.optional.map((k, i) => (
+                    <span key={k}>
+                      {i > 0 && ", "}
+                      <code className="font-mono">{k}</code>
+                    </span>
+                  ))}
+                </p>
+              )}
+            </div>
+          )}
+          {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
           {issues.length > 0 && (
             <ul className="max-h-40 list-disc space-y-0.5 overflow-auto pl-5 text-xs text-destructive">
               {issues.map((i, k) => (
