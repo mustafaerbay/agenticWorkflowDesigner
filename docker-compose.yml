@@ -1,0 +1,234 @@
+# Agentic SDLC Platform — development stack.
+# Run with:  docker compose -p agentic-sdlc-dev up -d --build
+# Only the `web` service publishes a port. Databases, broker, cache, API and the
+# sandbox stay on internal networks.
+
+name: agentic-sdlc-dev
+
+x-backend-build: &backend-build
+  context: ./backend
+  dockerfile: Dockerfile
+
+x-backend-env: &backend-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentic}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-agentic}
+  REDIS_URL: redis://redis:6379/0
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:-agentic}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}@rabbitmq:5672/
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  SANDBOX_URL: http://sandbox:8100
+  SANDBOX_TOKEN: ${SANDBOX_TOKEN:?set SANDBOX_TOKEN in .env}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  LLM_API_KEY_REF: LLM_API_KEY
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-agentic}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+
+  redis:
+    image: redis:7.4.6-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 128m
+
+  rabbitmq:
+    image: rabbitmq:4.1.4-alpine
+    restart: unless-stopped
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-agentic}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    mem_limit: 512m
+
+  migrate:
+    build: *backend-build
+    image: agentic-sdlc/backend:${IMAGE_TAG:-dev}
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    <<: *hardening
+
+  api:
+    build: *backend-build
+    image: agentic-sdlc/backend:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment: *backend-env
+    volumes:
+      - artifacts:/artifacts:ro
+    networks: [backend, edge]
+    expose: ["8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/ready', timeout=4).status == 200 else 1)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 20s
+    mem_limit: 512m
+    <<: *hardening
+
+  orchestrator:
+    build: *backend-build
+    image: agentic-sdlc/backend:${IMAGE_TAG:-dev}
+    command: ["python", "-m", "app.workers.orchestrator"]
+    restart: unless-stopped
+    environment: *backend-env
+    networks: [backend]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/orchestrator-healthy') < 30 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 20s
+    mem_limit: 384m
+    <<: *hardening
+
+  worker:
+    build: *backend-build
+    image: agentic-sdlc/backend:${IMAGE_TAG:-dev}
+    command: ["python", "-m", "app.workers.agent_worker"]
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+    volumes:
+      - artifacts:/artifacts
+    networks: [backend, sandbox]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      sandbox:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/worker-healthy') < 30 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 40s
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+    mem_limit: 512m
+    <<: *hardening
+
+  # Executes agent file/shell/test tools. No secrets, no Docker socket, read-only
+  # root filesystem, and attached only to an internal network without Internet.
+  sandbox:
+    build: *backend-build
+    image: agentic-sdlc/backend:${IMAGE_TAG:-dev}
+    command: ["uvicorn", "app.sandbox.server:app", "--host", "0.0.0.0", "--port", "8100"]
+    restart: unless-stopped
+    environment:
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:?set SANDBOX_TOKEN in .env}
+      WORKSPACES_DIR: /workspaces
+      TEMPLATES_DIR: /app/workspace_templates
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - workspaces:/workspaces
+    networks: [sandbox]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/health', timeout=4).status == 200 else 1)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 10s
+    <<: *hardening
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: agentic-sdlc/web:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}:8080"
+    networks: [edge]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  backend: {}
+  edge: {}
+  sandbox:
+    internal: true
+
+volumes:
+  postgres-data: {}
+  rabbitmq-data: {}
+  workspaces: {}
+  artifacts: {}

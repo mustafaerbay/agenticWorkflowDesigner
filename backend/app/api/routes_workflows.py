@@ -1,0 +1,222 @@
+import uuid
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import audit, current_user, get_bus, load_workflow, require_writer
+from app.core.db import get_session
+from app.models import User, Workflow, WorkflowEdge, WorkflowNode, WorkflowRun, WorkflowVersion, utcnow
+from app.orchestration.bus import Bus
+from app.orchestration.events import commit_and_publish
+from app.schemas import (
+    ExecuteIn,
+    RunOut,
+    ValidateIn,
+    WorkflowImport,
+    WorkflowIn,
+    WorkflowOut,
+    WorkflowSummary,
+    WorkflowUpdate,
+)
+from app.services.execution import create_run, get_validator
+from app.services.serializers import run_out
+
+router = APIRouter(prefix="/api/workflows", tags=["workflows"])
+EXPORT_FORMAT = "agentic-sdlc/workflow@1"
+
+
+async def current_definition(session: AsyncSession, workflow: Workflow) -> WorkflowVersion:
+    return (await session.execute(
+        select(WorkflowVersion).where(WorkflowVersion.workflow_id == workflow.id,
+                                      WorkflowVersion.version == workflow.current_version)
+    )).scalar_one()
+
+
+async def add_version(session: AsyncSession, workflow: Workflow, version: int, definition: dict[str, Any], user: User) -> WorkflowVersion:
+    if not isinstance(definition.get("nodes"), list) or not isinstance(definition.get("edges"), list):
+        raise HTTPException(status_code=422, detail="definition requires 'nodes' and 'edges' lists")
+    wv = WorkflowVersion(id=uuid.uuid4(), workflow_id=workflow.id, version=version, definition=definition, created_by=user.id)
+    session.add(wv)
+    await session.flush()
+    seen_nodes: set[str] = set()
+    for node in definition["nodes"]:
+        if isinstance(node, dict) and isinstance(node.get("id"), str) and node["id"] not in seen_nodes:
+            seen_nodes.add(node["id"])
+            data = node.get("data") or {}
+            session.add(WorkflowNode(workflow_version_id=wv.id, node_id=node["id"][:64], type=str(node.get("type"))[:32],
+                                     label=str(data.get("label") or "")[:200], config=data.get("config") or {}))
+    seen_edges: set[str] = set()
+    for edge in definition["edges"]:
+        if isinstance(edge, dict) and isinstance(edge.get("id"), str) and edge["id"] not in seen_edges:
+            seen_edges.add(edge["id"])
+            session.add(WorkflowEdge(workflow_version_id=wv.id, edge_id=edge["id"][:128], source=str(edge.get("source"))[:64],
+                                     target=str(edge.get("target"))[:64], source_handle=str(edge.get("sourceHandle") or "out")[:64],
+                                     target_handle=str(edge.get("targetHandle") or "in")[:64], label=edge.get("label")))
+    return wv
+
+
+async def last_run_status(session: AsyncSession, workflow_id: uuid.UUID) -> str | None:
+    return (await session.execute(
+        select(WorkflowRun.status).where(WorkflowRun.workflow_id == workflow_id)
+        .order_by(WorkflowRun.created_at.desc()).limit(1)
+    )).scalar_one_or_none()
+
+
+async def to_out(session: AsyncSession, workflow: Workflow, full: bool = True) -> dict[str, Any]:
+    version = await current_definition(session, workflow)
+    data: dict[str, Any] = {
+        "id": str(workflow.id),
+        "name": workflow.name,
+        "description": workflow.description,
+        "version": workflow.current_version,
+        "created_at": workflow.created_at,
+        "updated_at": workflow.updated_at,
+        "node_count": len(version.definition.get("nodes") or []),
+        "last_run_status": await last_run_status(session, workflow.id),
+        "is_example": workflow.is_example,
+    }
+    if full:
+        data["definition"] = version.definition
+    return data
+
+
+async def create_workflow(session: AsyncSession, user: User, name: str, description: str,
+                          definition: dict[str, Any], is_example: bool = False) -> Workflow:
+    workflow = Workflow(id=uuid.uuid4(), name=name, description=description, owner_id=user.id,
+                        current_version=1, is_example=is_example)
+    session.add(workflow)
+    await session.flush()
+    await add_version(session, workflow, 1, definition, user)
+    return workflow
+
+
+@router.get("", response_model=list[WorkflowSummary])
+async def list_workflows(search: str | None = None, user: User = Depends(current_user),
+                         session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
+    query = select(Workflow).where(Workflow.deleted_at.is_(None)).order_by(Workflow.updated_at.desc())
+    if user.role != "admin":
+        query = query.where((Workflow.owner_id == user.id) | Workflow.is_example.is_(True))
+    if search:
+        query = query.where(Workflow.name.ilike(f"%{search}%") | Workflow.description.ilike(f"%{search}%"))
+    workflows = (await session.execute(query)).scalars().all()
+    return [await to_out(session, w, full=False) for w in workflows]
+
+
+@router.post("", response_model=WorkflowOut, status_code=201)
+async def create(body: WorkflowIn, user: User = Depends(require_writer),
+                 session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    workflow = await create_workflow(session, user, body.name, body.description, body.definition)
+    audit(session, user, "workflow.create", "workflow", workflow.id)
+    await session.commit()
+    return await to_out(session, workflow)
+
+
+@router.post("/validate")
+async def validate_unsaved(body: ValidateIn, user: User = Depends(current_user)) -> dict[str, Any]:
+    return get_validator().validate(body.definition).as_dict()
+
+
+@router.post("/import", response_model=WorkflowOut, status_code=201)
+async def import_workflow(body: WorkflowImport, user: User = Depends(require_writer),
+                          session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    if body.format != EXPORT_FORMAT:
+        raise HTTPException(status_code=422, detail=f"Unsupported format; expected {EXPORT_FORMAT}")
+    workflow = await create_workflow(session, user, body.name, body.description, body.definition)
+    audit(session, user, "workflow.import", "workflow", workflow.id)
+    await session.commit()
+    return await to_out(session, workflow)
+
+
+@router.get("/{workflow_id}", response_model=WorkflowOut)
+async def get_workflow(workflow_id: uuid.UUID, user: User = Depends(current_user),
+                       session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    return await to_out(session, await load_workflow(session, workflow_id, user))
+
+
+@router.put("/{workflow_id}", response_model=WorkflowOut)
+async def update_workflow(workflow_id: uuid.UUID, body: WorkflowUpdate, user: User = Depends(require_writer),
+                          session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    workflow = await load_workflow(session, workflow_id, user, write=True)
+    workflow = (await session.execute(select(Workflow).where(Workflow.id == workflow.id).with_for_update())).scalar_one()
+    if body.name is not None:
+        workflow.name = body.name
+    if body.description is not None:
+        workflow.description = body.description
+    if body.definition is not None:
+        current = await current_definition(session, workflow)
+        if current.definition != body.definition:
+            workflow.current_version += 1
+            await add_version(session, workflow, workflow.current_version, body.definition, user)
+    workflow.updated_at = utcnow()
+    audit(session, user, "workflow.update", "workflow", workflow.id, {"version": workflow.current_version})
+    await session.commit()
+    return await to_out(session, workflow)
+
+
+@router.delete("/{workflow_id}", status_code=204)
+async def delete_workflow(workflow_id: uuid.UUID, user: User = Depends(require_writer),
+                          session: AsyncSession = Depends(get_session)) -> Response:
+    workflow = await load_workflow(session, workflow_id, user, write=True)
+    workflow.deleted_at = utcnow()  # soft delete keeps execution history intact
+    audit(session, user, "workflow.delete", "workflow", workflow.id)
+    await session.commit()
+    return Response(status_code=204)
+
+
+@router.post("/{workflow_id}/validate")
+async def validate_saved(workflow_id: uuid.UUID, user: User = Depends(current_user),
+                         session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    workflow = await load_workflow(session, workflow_id, user)
+    version = await current_definition(session, workflow)
+    return get_validator().validate(version.definition).as_dict()
+
+
+@router.post("/{workflow_id}/duplicate", response_model=WorkflowOut, status_code=201)
+async def duplicate(workflow_id: uuid.UUID, user: User = Depends(require_writer),
+                    session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    source = await load_workflow(session, workflow_id, user)
+    version = await current_definition(session, source)
+    copy = await create_workflow(session, user, f"{source.name} (copy)", source.description, version.definition)
+    audit(session, user, "workflow.duplicate", "workflow", copy.id, {"source": str(source.id)})
+    await session.commit()
+    return await to_out(session, copy)
+
+
+@router.get("/{workflow_id}/export")
+async def export(workflow_id: uuid.UUID, user: User = Depends(current_user),
+                 session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    workflow = await load_workflow(session, workflow_id, user)
+    version = await current_definition(session, workflow)
+    return {"format": EXPORT_FORMAT, "name": workflow.name, "description": workflow.description,
+            "definition": version.definition}
+
+
+@router.get("/{workflow_id}/versions")
+async def versions(workflow_id: uuid.UUID, user: User = Depends(current_user),
+                   session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
+    workflow = await load_workflow(session, workflow_id, user)
+    rows = (await session.execute(
+        select(WorkflowVersion).where(WorkflowVersion.workflow_id == workflow.id).order_by(WorkflowVersion.version.desc())
+    )).scalars().all()
+    return [{"version": v.version, "created_at": v.created_at, "created_by": str(v.created_by) if v.created_by else None}
+            for v in rows]
+
+
+@router.post("/{workflow_id}/execute", response_model=RunOut, status_code=201)
+async def execute(workflow_id: uuid.UUID, body: ExecuteIn | None = None, user: User = Depends(require_writer),
+                  session: AsyncSession = Depends(get_session), bus: Bus = Depends(get_bus)) -> dict[str, Any]:
+    workflow = await load_workflow(session, workflow_id, user)
+    version = await current_definition(session, workflow)
+    run = await create_run(session, workflow, version, (body.input if body else {}) or {}, user.id)
+    audit(session, user, "workflow.execute", "workflow_run", run.id, {"workflow_id": str(workflow.id)})
+    await commit_and_publish(session, bus)
+    return await run_out(session, run)
+
+
+async def count_workflows(session: AsyncSession, user: User) -> int:
+    query = select(func.count()).select_from(Workflow).where(Workflow.deleted_at.is_(None))
+    if user.role != "admin":
+        query = query.where((Workflow.owner_id == user.id) | Workflow.is_example.is_(True))
+    return int((await session.execute(query)).scalar_one())
