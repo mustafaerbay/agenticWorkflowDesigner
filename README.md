@@ -67,6 +67,50 @@ count. The files are extracted into the sandbox with a path-safe filter and comm
 workspace baseline, so later `git_diff` and patches show only the agents' changes. Private
 repositories are not supported yet.
 
+## Business workflows (for non-technical teams)
+
+Workflows can be created in three ways, all compiled to the same engine:
+
+- **AI-assisted** (*New workflow → Describe it*). Someone in HR, Finance, Operations or IT
+  describes the task in plain language. The designer proposes a **Business Plan**: steps chosen
+  only from the capability registry. The plan is checked by the policy engine and compiled into
+  the graph, and the user sees an explanation, the required integrations, approvals and a diff of
+  every change. Changes are made by chatting ("add manager approval before sending the email").
+  Nothing is saved until the user accepts and saves. This needs a model provider: add one under
+  *Model Settings*, or set `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY`.
+- **Templates**: 14 department templates (HR, Finance, Operations, IT, Software Development).
+  Each is badged "Runs locally" or lists the connections it needs.
+- **Advanced**: the React Flow editor. Visual edits to business workflows are translated back
+  into plan operations. Edits that can't be represented are explained, and the user can choose to
+  detach the workflow from its plan.
+
+Lifecycle: a new workflow is a **draft**.
+1. **Simulate** it: side-effect steps return labelled samples and approvals use the outcome you
+   pick.
+2. **Enable** it, explicitly authorizing every sensitive step (communication, writing to another
+   system, financial).
+3. **Run** it. Runs always execute the immutable enabled version.
+
+Governance is enforced in Python, never by the model:
+- An approval is required before every sensitive action, and policy inserts it if missing.
+- Separation of duties applies to financial approvals.
+- Department memberships control access: member, builder, approver and dept_admin roles are
+  managed under *Users*.
+- Connection secrets are encrypted and write-only.
+- There is a runtime guard that refuses sensitive actions without a prior approval in the run.
+- Security-relevant actions are audit-logged.
+
+Connections (*Connections* page, admins): Email (SMTP), Business system (HTTP API with
+allow-listed paths), Slack, and Microsoft Teams. Built-in tools (documents, CSV data, reports,
+in-app inbox) need no setup.
+
+New `.env` settings:
+
+| Setting | Purpose |
+|---|---|
+| `CONNECTION_ENCRYPTION_KEY` | Fernet key that encrypts connection secrets. Generate with `python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`. Keep it stable: changing it makes stored secrets unreadable. |
+| `DESIGNER_PROVIDER_NAME` | Optional: which model provider the AI designer uses. The default is the first provider. |
+
 ## Verify
 
 ```bash
