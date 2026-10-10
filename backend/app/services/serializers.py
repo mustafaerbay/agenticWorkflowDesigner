@@ -9,6 +9,9 @@ from app.models import AgentArtifact, Approval, NodeRun, WorkflowRun
 def run_summary(run: WorkflowRun) -> dict[str, Any]:
     return {
         "id": str(run.id),
+        "mode": run.mode,
+        "triggered_by": run.triggered_by,
+        "department": run.department,
         "workflow_id": str(run.workflow_id),
         "workflow_name": run.workflow_name,
         "workflow_version": run.workflow_version,
@@ -71,8 +74,13 @@ async def run_out(session: AsyncSession, run: WorkflowRun) -> dict[str, Any]:
     }
 
 
-def approval_out(approval: Approval, workflow_name: str) -> dict[str, Any]:
+def approval_out(approval: Approval, workflow_name: str, problem: str | None = None) -> dict[str, Any]:
     return {
+        "department": approval.department,
+        "required_role": approval.required_role,
+        "separation_of_duties": approval.separation_of_duties,
+        "can_decide": problem is None and approval.status == "pending",
+        "reason_cannot_decide": problem,
         "id": str(approval.id),
         "run_id": str(approval.run_id),
         "node_id": approval.node_id,

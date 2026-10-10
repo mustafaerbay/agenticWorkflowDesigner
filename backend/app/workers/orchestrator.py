@@ -112,7 +112,56 @@ class Orchestrator:
         for run_id in pending_runs:
             await self._with_run(run_id, self.engine.start)
             counts["started"] += 1
+        counts["scheduled"] = await self.fire_schedules()
         return counts
+
+    async def fire_schedules(self, at: datetime | None = None) -> int:
+        """Start runs of enabled scheduled workflows; one run per (workflow, slot) at most."""
+        from zoneinfo import ZoneInfo
+
+        from croniter import croniter
+        from sqlalchemy.exc import IntegrityError
+
+        from app.models import ScheduleFire, Workflow, WorkflowVersion
+        from app.services.execution import create_run
+
+        fired = 0
+        moment = at or now()
+        async with self.sessions() as session:
+            workflows = (await session.execute(select(Workflow).where(
+                Workflow.status == "enabled", Workflow.schedule_cron.is_not(None), Workflow.deleted_at.is_(None),
+                Workflow.enabled_version.is_not(None)))).scalars().all()
+        for wf in workflows:
+            try:
+                tz = ZoneInfo(wf.schedule_timezone or "UTC")
+                slot = croniter(wf.schedule_cron, moment.astimezone(tz)).get_prev(datetime).astimezone(UTC)
+            except Exception:
+                log.warning("invalid schedule", extra={"workflow_id": str(wf.id)})
+                continue
+            if wf.enabled_at and slot < wf.enabled_at:
+                continue  # never back-fill slots from before the workflow was enabled
+            async with self.sessions() as session:
+                try:
+                    session.add(ScheduleFire(workflow_id=wf.id, slot=slot))
+                    await session.flush()
+                except IntegrityError:
+                    await session.rollback()
+                    continue
+                version = (await session.execute(select(WorkflowVersion).where(
+                    WorkflowVersion.workflow_id == wf.id, WorkflowVersion.version == wf.enabled_version))).scalar_one()
+                start = next((n for n in version.definition.get("nodes") or [] if n.get("type") == "start"), {})
+                defaults = ((start.get("data") or {}).get("config") or {}).get("default_input") or {}
+                workflow = await session.get(Workflow, wf.id)
+                assert workflow is not None
+                run = await create_run(session, workflow, version, dict(defaults), wf.enabled_by or wf.owner_id,
+                                       triggered_by="schedule")
+                fire = (await session.execute(select(ScheduleFire).where(
+                    ScheduleFire.workflow_id == wf.id, ScheduleFire.slot == slot))).scalar_one()
+                fire.run_id = run.id
+                await commit_and_publish(session, self.bus)
+                fired += 1
+                log.info("scheduled run started", extra={"workflow_id": str(wf.id), "slot": slot.isoformat()})
+        return fired
 
     async def _with_run(self, run_id: uuid.UUID, action: Any) -> None:
         async with self.sessions() as session:

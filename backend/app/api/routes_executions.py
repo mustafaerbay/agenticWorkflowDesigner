@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import audit, current_user, get_bus, load_run, user_from_token
+from app.core import permissions
 from app.core.config import get_settings
 from app.core.db import get_session, session_factory
 from app.models import AgentArtifact, Approval, ExecutionEvent, User, Workflow, WorkflowRun, WorkflowVersion
@@ -33,17 +34,16 @@ async def list_runs(
     limit: int = Query(default=50, ge=1, le=500), user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
-    query = select(WorkflowRun).order_by(WorkflowRun.created_at.desc()).limit(limit)
-    if user.role != "admin":
-        owned = select(Workflow.id).where(Workflow.owner_id == user.id)
-        query = query.where((WorkflowRun.created_by == user.id) | WorkflowRun.workflow_id.in_(owned))
+    query = select(WorkflowRun, Workflow).join(Workflow, Workflow.id == WorkflowRun.workflow_id) \
+        .order_by(WorkflowRun.created_at.desc()).limit(limit * 4 if user.role != "admin" else limit)
     if workflow_id:
         query = query.where(WorkflowRun.workflow_id == workflow_id)
     if status:
         query = query.where(WorkflowRun.status == status.upper())
     if search:
         query = query.where(WorkflowRun.workflow_name.ilike(f"%{search}%"))
-    return [run_summary(r) for r in (await session.execute(query)).scalars().all()]
+    rows = [(r, w) for r, w in (await session.execute(query)).all() if permissions.can_view_run(user, r, w)]
+    return [run_summary(r) for r, _ in rows[:limit]]
 
 
 @router.get("/api/executions/{run_id}", response_model=RunOut)
@@ -194,15 +194,19 @@ async def stream(websocket: WebSocket, run_id: uuid.UUID, token: str = "", after
 @router.get("/api/approvals", response_model=list[ApprovalOut])
 async def list_approvals(status: str | None = None, user: User = Depends(current_user),
                          session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
-    query = (select(Approval, WorkflowRun.workflow_name)
+    query = (select(Approval, WorkflowRun, Workflow)
              .join(WorkflowRun, WorkflowRun.id == Approval.run_id)
-             .order_by(Approval.requested_at.desc()).limit(200))
+             .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+             .order_by(Approval.requested_at.desc()).limit(500))
     if status:
         query = query.where(Approval.status == status)
-    if user.role != "admin":
-        owned = select(Workflow.id).where(Workflow.owner_id == user.id)
-        query = query.where((WorkflowRun.created_by == user.id) | WorkflowRun.workflow_id.in_(owned))
-    return [approval_out(a, name) for a, name in (await session.execute(query)).all()]
+    out = []
+    for approval, run, wf in (await session.execute(query)).all():
+        problem = permissions.approval_decision_problem(user, approval, run, wf)
+        if problem is not None and not permissions.can_view_run(user, run, wf):
+            continue
+        out.append(approval_out(approval, run.workflow_name, problem))
+    return out[:200]
 
 
 @router.post("/api/approvals/{approval_id}/decision", response_model=ApprovalOut)
@@ -211,9 +215,15 @@ async def decide(approval_id: uuid.UUID, body: DecisionIn, user: User = Depends(
     approval = await session.get(Approval, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found")
-    await load_run(session, approval.run_id, user, write=True)
-    if user.role not in ("admin", "editor"):
-        raise HTTPException(status_code=403, detail="Not authorized to decide approvals")
+    run_row = await session.get(WorkflowRun, approval.run_id)
+    workflow = await session.get(Workflow, run_row.workflow_id) if run_row else None
+    if run_row is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    problem = permissions.approval_decision_problem(user, approval, run_row, workflow)
+    if problem is not None:
+        if not permissions.can_view_run(user, run_row, workflow):
+            raise HTTPException(status_code=404, detail="Approval not found")
+        raise HTTPException(status_code=403, detail=problem)
     run = await lock_run(session, approval.run_id)
     approval = await session.get(Approval, approval_id, with_for_update=True, populate_existing=True)
     assert run is not None and approval is not None

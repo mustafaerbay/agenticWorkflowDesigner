@@ -479,6 +479,26 @@ class WorkerServices:
         count_key = "assignees" if kind == "task" else "recipients"
         return {key: str(items[0].id), count_key: len(items)}
 
+    async def require_prior_approval(self, tool: str) -> None:
+        """Runtime safeguard independent of how the workflow was built: every sensitive action needs
+        its own approved approval earlier in the same run."""
+        async with self.sessions() as session:
+            runs = (await session.execute(select(NodeRun).where(NodeRun.run_id == self.run.id))).scalars().all()
+        approvals = sum(1 for nr in runs if nr.node_type == "approval" and nr.status == "COMPLETED"
+                        and (nr.output or {}).get("approved") is True and not (nr.output or {}).get("_simulated"))
+        executed = 0
+        for nr in runs:
+            for call in nr.tool_calls or []:
+                if call.get("error") is not None or call.get("result") is None:
+                    continue
+                name = call.get("tool")
+                method = str((call.get("args") or {}).get("method") or "GET").upper()
+                if name in ("email_send", "chat_post") or (name == "http_request" and method != "GET"):
+                    executed += 1
+        if approvals <= executed:
+            raise ToolError(f"'{tool}' needs an approval earlier in this run before it can act "
+                            "(sensitive actions are never executed without approval)", retryable=False)
+
     async def connection(self, capability_connector: str) -> tuple[Any, str | None]:
         from app.connections.connectors import CONNECTOR_TYPES
         from app.connections.crypto import SecretStoreError, decrypt_secret

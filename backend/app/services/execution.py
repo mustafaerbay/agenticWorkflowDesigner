@@ -73,7 +73,8 @@ async def effective_agent_config(session: AsyncSession, node_config: dict[str, A
 
 
 async def create_run(
-    session: AsyncSession, workflow: Workflow, version: WorkflowVersion, run_input: dict[str, Any], user_id: uuid.UUID
+    session: AsyncSession, workflow: Workflow, version: WorkflowVersion, run_input: dict[str, Any], user_id: uuid.UUID,
+    mode: str = "real", simulation: dict[str, Any] | None = None, triggered_by: str = "manual",
 ) -> WorkflowRun:
     definition = version.definition
     validation = get_validator().validate(definition)
@@ -100,7 +101,12 @@ async def create_run(
         steps=0,
         event_seq=0,
         created_by=user_id,
+        mode=mode,
+        triggered_by=triggered_by,
+        department=workflow.department,
     )
+    if mode == "simulation":
+        run.effective_config = {**effective, "__simulation__": simulation or {}}
     session.add(run)
     await session.flush()
     session.info.setdefault("commands", []).append(

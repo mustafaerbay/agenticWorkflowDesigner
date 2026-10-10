@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import routes_admin, routes_executions, routes_workflows
+from app.api import routes_admin, routes_business, routes_executions, routes_org, routes_workflows
 from app.core.config import get_settings
 from app.core.db import dispose_engine, session_factory
 from app.core.logging import configure_logging
@@ -45,4 +45,6 @@ if settings.cors_origins:
 app.include_router(routes_admin.router)
 app.include_router(routes_workflows.router)
 app.include_router(routes_executions.router)
+app.include_router(routes_business.router)
+app.include_router(routes_org.router)
 configure_tracing(app)

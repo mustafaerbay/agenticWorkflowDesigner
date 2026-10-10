@@ -25,6 +25,8 @@ x-backend-env: &backend-env
   LLM_API_KEY_REF: LLM_API_KEY
   LLM_API_KEY: ${LLM_API_KEY:-}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  CONNECTION_ENCRYPTION_KEY: ${CONNECTION_ENCRYPTION_KEY:-}
+  DESIGNER_PROVIDER_NAME: ${DESIGNER_PROVIDER_NAME:-}
 
 x-hardening: &hardening
   security_opt:
@@ -99,6 +101,7 @@ services:
     environment: *backend-env
     volumes:
       - artifacts:/artifacts:ro
+      - uploads:/uploads
     networks: [backend, edge]
     expose: ["8000"]
     depends_on:
@@ -183,9 +186,11 @@ services:
       SANDBOX_TOKEN: ${SANDBOX_TOKEN:?set SANDBOX_TOKEN in .env}
       WORKSPACES_DIR: /workspaces
       TEMPLATES_DIR: /app/workspace_templates
+      UPLOADS_DIR: /uploads
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - workspaces:/workspaces
+      - uploads:/uploads:ro
     networks: [sandbox]
     read_only: true
     tmpfs:
@@ -233,3 +238,4 @@ volumes:
   rabbitmq-data: {}
   workspaces: {}
   artifacts: {}
+  uploads: {}

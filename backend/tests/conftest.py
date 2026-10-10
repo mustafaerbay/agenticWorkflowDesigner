@@ -16,6 +16,8 @@ os.environ["DATABASE_URL"] = f"{_server_url}/{TEST_DB}"
 _tmp = tempfile.mkdtemp(prefix="agentic-tests-")
 os.environ["WORKSPACES_DIR"] = os.path.join(_tmp, "workspaces")
 os.environ["ARTIFACTS_DIR"] = os.path.join(_tmp, "artifacts")
+os.environ["UPLOADS_DIR"] = os.path.join(_tmp, "uploads")
+os.environ["CONNECTION_ENCRYPTION_KEY"] = "vV9g9b2m3rS7J1bqJ3nqk1T3m0k8Kq0W2u0O4n7r2xQ="
 os.environ.setdefault("TEMPLATES_DIR", os.path.join(os.path.dirname(__file__), "..", "workspace_templates"))
 os.environ["SANDBOX_TOKEN"] = "test-sandbox-token-0123456789"
 os.environ["JWT_SECRET"] = "test-jwt-secret-0123456789abcdef"
@@ -23,6 +25,7 @@ os.environ["ADMIN_EMAIL"] = "admin@test.local"
 os.environ["ADMIN_PASSWORD"] = "admin-password-for-tests"
 os.makedirs(os.environ["WORKSPACES_DIR"], exist_ok=True)
 os.makedirs(os.environ["ARTIFACTS_DIR"], exist_ok=True)
+os.makedirs(os.environ["UPLOADS_DIR"], exist_ok=True)
 
 import asyncpg  # noqa: E402
 import httpx  # noqa: E402
@@ -44,6 +47,7 @@ from app.workers.agent_worker import AgentWorker  # noqa: E402
 from app.workers.orchestrator import Orchestrator  # noqa: E402
 
 TABLES = [
+    "schedule_fires", "designer_sessions", "inbox_items", "files", "connections", "departments",
     "audit_logs", "agent_artifacts", "approvals", "execution_events", "node_runs", "workflow_runs",
     "workflow_edges", "workflow_nodes", "workflow_versions", "workflows", "agent_versions", "agents",
     "model_providers", "tools", "users",

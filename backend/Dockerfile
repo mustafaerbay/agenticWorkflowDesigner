@@ -18,8 +18,8 @@ RUN pip install -r requirements-dev.txt
 
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --home-dir /home/app --create-home app \
-    && mkdir -p /workspaces /artifacts \
-    && chown app:app /workspaces /artifacts
+    && mkdir -p /workspaces /artifacts /uploads \
+    && chown app:app /workspaces /artifacts /uploads
 
 COPY --chown=app:app . .
 

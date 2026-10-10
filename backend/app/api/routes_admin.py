@@ -12,6 +12,7 @@ from app.agents.llm_client import LLMClient, LLMError
 from app.agents.presets import preset_list
 from app.api.deps import audit, current_user, require_admin, require_writer
 from app.api.routes_workflows import count_workflows
+from app.core import permissions
 from app.core.db import get_session
 from app.core.security import create_access_token, verify_password
 from app.models import Agent, AgentVersion, Approval, ModelProvider, User, Workflow, WorkflowRun, utcnow
@@ -33,7 +34,7 @@ router = APIRouter()
 
 
 def user_out(user: User) -> dict[str, Any]:
-    return {"id": str(user.id), "email": user.email, "name": user.name, "role": user.role}
+    return permissions.public_user(user)
 
 
 @router.get("/api/health", tags=["health"])
@@ -86,8 +87,14 @@ async def agent_out(session: AsyncSession, agent: Agent) -> dict[str, Any]:
     version = (await session.execute(
         select(AgentVersion).where(AgentVersion.agent_id == agent.id, AgentVersion.version == agent.current_version)
     )).scalar_one()
+    profile = dict(agent.profile or {})
+    if profile.get("capabilities"):
+        from app.business.service import policy_context
+
+        ctx = await policy_context(session, None)
+        profile["availability"] = "available" if "llm" in ctx.connected else "requires_connection"
     return {"id": str(agent.id), "name": agent.name, "description": agent.description, "kind": agent.kind,
-            "preset": agent.preset, "config": version.config, "version": agent.current_version,
+            "preset": agent.preset, "config": version.config, "version": agent.current_version, "profile": profile,
             "created_at": agent.created_at, "updated_at": agent.updated_at}
 
 
@@ -239,15 +246,26 @@ async def test_provider(provider_id: uuid.UUID, user: User = Depends(require_wri
 
 @router.get("/api/tools", tags=["tools"])
 async def tools(user: User = Depends(current_user)) -> list[dict[str, Any]]:
-    return list(tool_catalog().values())
+    from app.business.capabilities import CAPABILITIES, tool_side_effects
+
+    effects = tool_side_effects()
+    out = []
+    for name, spec in tool_catalog().items():
+        caps = [c for c in CAPABILITIES.values() if c.implementation["kind"] == "tool" and c.implementation["tool"] == name]
+        out.append({**spec, "side_effect": effects.get(name, "none"),
+                    "connector": next((c.connector for c in caps if c.connector), None),
+                    "capabilities": [c.id for c in caps]})
+    return out
 
 
 @router.get("/api/stats", response_model=StatsOut, tags=["stats"])
 async def stats(user: User = Depends(current_user), session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    run_filter = []
+    run_filter = [WorkflowRun.mode == "real"]
     if user.role != "admin":
         owned = select(Workflow.id).where(Workflow.owner_id == user.id)
-        run_filter = [(WorkflowRun.created_by == user.id) | WorkflowRun.workflow_id.in_(owned)]
+        departments = list(permissions.departments_of(user))
+        run_filter.append((WorkflowRun.created_by == user.id) | WorkflowRun.workflow_id.in_(owned)
+                          | WorkflowRun.department.in_(departments))
     by_status = dict((await session.execute(
         select(WorkflowRun.status, func.count()).where(*run_filter).group_by(WorkflowRun.status)
     )).all())

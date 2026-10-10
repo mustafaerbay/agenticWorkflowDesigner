@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import audit, current_user, get_bus, load_workflow, require_writer
+from app.core import permissions
 from app.core.db import get_session
 from app.models import User, Workflow, WorkflowEdge, WorkflowNode, WorkflowRun, WorkflowVersion, utcnow
 from app.orchestration.bus import Bus
@@ -64,8 +65,9 @@ async def last_run_status(session: AsyncSession, workflow_id: uuid.UUID) -> str 
     )).scalar_one_or_none()
 
 
-async def to_out(session: AsyncSession, workflow: Workflow, full: bool = True) -> dict[str, Any]:
+async def to_out(session: AsyncSession, workflow: Workflow, full: bool = True, user: User | None = None) -> dict[str, Any]:
     version = await current_definition(session, workflow)
+    meta = (version.definition or {}).get("meta") if version.plan is not None else None
     data: dict[str, Any] = {
         "id": str(workflow.id),
         "name": workflow.name,
@@ -76,9 +78,25 @@ async def to_out(session: AsyncSession, workflow: Workflow, full: bool = True) -
         "node_count": len(version.definition.get("nodes") or []),
         "last_run_status": await last_run_status(session, workflow.id),
         "is_example": workflow.is_example,
+        "department": workflow.department,
+        "status": workflow.status,
+        "enabled_version": workflow.enabled_version,
+        "has_plan": version.plan is not None,
+        "plan_meta": {k: meta.get(k) for k in ("compiler_version", "registry_version", "policy_version", "plan_hash")}
+        if meta else None,
+        "can_edit": permissions.can_edit_workflow(user, workflow) if user else None,
+        "can_enable": permissions.can_enable_workflow(user, workflow) if user else None,
     }
     if full:
         data["definition"] = version.definition
+        data["plan"] = version.plan
+        data["explanation"] = None
+        if version.plan is not None:
+            from app.business.plan import BusinessPlan
+            from app.business.service import evaluate, policy_context
+
+            evaluation = evaluate(BusinessPlan.model_validate(version.plan), await policy_context(session, workflow.department))
+            data["explanation"] = evaluation.explanation
     return data
 
 
@@ -96,21 +114,22 @@ async def create_workflow(session: AsyncSession, user: User, name: str, descript
 async def list_workflows(search: str | None = None, user: User = Depends(current_user),
                          session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
     query = select(Workflow).where(Workflow.deleted_at.is_(None)).order_by(Workflow.updated_at.desc())
-    if user.role != "admin":
-        query = query.where((Workflow.owner_id == user.id) | Workflow.is_example.is_(True))
     if search:
         query = query.where(Workflow.name.ilike(f"%{search}%") | Workflow.description.ilike(f"%{search}%"))
-    workflows = (await session.execute(query)).scalars().all()
-    return [await to_out(session, w, full=False) for w in workflows]
+    workflows = [w for w in (await session.execute(query)).scalars().all() if permissions.can_view_workflow(user, w)]
+    return [await to_out(session, w, full=False, user=user) for w in workflows]
 
 
 @router.post("", response_model=WorkflowOut, status_code=201)
 async def create(body: WorkflowIn, user: User = Depends(require_writer),
                  session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    if not permissions.can_build_in(user, body.department):
+        raise HTTPException(status_code=403, detail=f"You cannot build workflows for {body.department}")
     workflow = await create_workflow(session, user, body.name, body.description, body.definition)
+    workflow.department = body.department
     audit(session, user, "workflow.create", "workflow", workflow.id)
     await session.commit()
-    return await to_out(session, workflow)
+    return await to_out(session, workflow, user=user)
 
 
 @router.post("/validate")
@@ -126,13 +145,13 @@ async def import_workflow(body: WorkflowImport, user: User = Depends(require_wri
     workflow = await create_workflow(session, user, body.name, body.description, body.definition)
     audit(session, user, "workflow.import", "workflow", workflow.id)
     await session.commit()
-    return await to_out(session, workflow)
+    return await to_out(session, workflow, user=user)
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)
 async def get_workflow(workflow_id: uuid.UUID, user: User = Depends(current_user),
                        session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    return await to_out(session, await load_workflow(session, workflow_id, user))
+    return await to_out(session, await load_workflow(session, workflow_id, user), user=user)
 
 
 @router.put("/{workflow_id}", response_model=WorkflowOut)
@@ -146,13 +165,40 @@ async def update_workflow(workflow_id: uuid.UUID, body: WorkflowUpdate, user: Us
         workflow.description = body.description
     if body.definition is not None:
         current = await current_definition(session, workflow)
-        if current.definition != body.definition:
+        if current.plan is not None:
+            await _apply_visual_edit(session, workflow, current, body.definition, user)
+        elif current.definition != body.definition:
             workflow.current_version += 1
             await add_version(session, workflow, workflow.current_version, body.definition, user)
     workflow.updated_at = utcnow()
     audit(session, user, "workflow.update", "workflow", workflow.id, {"version": workflow.current_version})
     await session.commit()
-    return await to_out(session, workflow)
+    return await to_out(session, workflow, user=user)
+
+
+async def _apply_visual_edit(session: AsyncSession, workflow: Workflow, current: WorkflowVersion,
+                             definition: dict[str, Any], user: User) -> None:
+    """Advanced-editor save of a plan-based workflow: translate graph edits into plan operations."""
+    from app.business.graph_edit import graph_to_operations
+    from app.business.operations import OperationError
+    from app.business.plan import BusinessPlan
+    from app.business.service import policy_context, preview_operations, save_plan_version
+
+    plan = BusinessPlan.model_validate(current.plan)
+    operations, unsupported = graph_to_operations(plan, definition)
+    if unsupported:
+        raise HTTPException(status_code=422, detail={
+            "message": "Some changes cannot be represented in this business workflow. Nothing was saved.",
+            "unsupported": [u.as_dict() for u in unsupported],
+            "operations": [o.model_dump() for o in operations]})
+    if not operations:
+        return
+    try:
+        evaluation = preview_operations(plan, operations, await policy_context(session, workflow.department))
+        await save_plan_version(session, workflow, evaluation, user, "Edited in the advanced editor")
+    except OperationError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc), "unsupported": [{"message": str(exc)}],
+                                                     "operations": [o.model_dump() for o in operations]}) from exc
 
 
 @router.delete("/{workflow_id}", status_code=204)
@@ -179,9 +225,14 @@ async def duplicate(workflow_id: uuid.UUID, user: User = Depends(require_writer)
     source = await load_workflow(session, workflow_id, user)
     version = await current_definition(session, source)
     copy = await create_workflow(session, user, f"{source.name} (copy)", source.description, version.definition)
+    copy.department = source.department
+    if version.plan is not None:
+        copy.status = "draft"
+        copy_version = await current_definition(session, copy)
+        copy_version.plan = version.plan
     audit(session, user, "workflow.duplicate", "workflow", copy.id, {"source": str(source.id)})
     await session.commit()
-    return await to_out(session, copy)
+    return await to_out(session, copy, user=user)
 
 
 @router.get("/{workflow_id}/export")
@@ -208,15 +259,33 @@ async def versions(workflow_id: uuid.UUID, user: User = Depends(current_user),
 async def execute(workflow_id: uuid.UUID, body: ExecuteIn | None = None, user: User = Depends(require_writer),
                   session: AsyncSession = Depends(get_session), bus: Bus = Depends(get_bus)) -> dict[str, Any]:
     workflow = await load_workflow(session, workflow_id, user)
+    if not permissions.can_run_workflow(user, workflow):
+        raise HTTPException(status_code=403, detail="You are not allowed to run this workflow")
     version = await current_definition(session, workflow)
-    run = await create_run(session, workflow, version, (body.input if body else {}) or {}, user.id)
+    run_input = (body.input if body else {}) or {}
+    if version.plan is not None or workflow.enabled_version is not None:
+        if workflow.status != "enabled" or workflow.enabled_version is None:
+            raise HTTPException(status_code=409, detail="This workflow is not enabled yet. Simulate it and enable it "
+                                                         "(with the required authorizations) before running it.")
+        version = (await session.execute(select(WorkflowVersion).where(
+            WorkflowVersion.workflow_id == workflow.id, WorkflowVersion.version == workflow.enabled_version))).scalar_one()
+    missing = _missing_inputs(version.definition, run_input)
+    if missing:
+        raise HTTPException(status_code=422, detail={"message": f"Missing required input: {', '.join(missing)}",
+                                                     "missing_inputs": missing})
+    run = await create_run(session, workflow, version, run_input, user.id)
     audit(session, user, "workflow.execute", "workflow_run", run.id, {"workflow_id": str(workflow.id)})
     await commit_and_publish(session, bus)
     return await run_out(session, run)
 
 
+def _missing_inputs(definition: dict[str, Any], run_input: dict[str, Any]) -> list[str]:
+    start = next((n for n in definition.get("nodes") or [] if n.get("type") == "start"), None)
+    schema = (((start or {}).get("data") or {}).get("config") or {}).get("input_schema") or {}
+    return [k for k in schema.get("required") or []
+            if run_input.get(k) is None or (isinstance(run_input.get(k), str) and not run_input[k].strip())]
+
+
 async def count_workflows(session: AsyncSession, user: User) -> int:
-    query = select(func.count()).select_from(Workflow).where(Workflow.deleted_at.is_(None))
-    if user.role != "admin":
-        query = query.where((Workflow.owner_id == user.id) | Workflow.is_example.is_(True))
-    return int((await session.execute(query)).scalar_one())
+    rows = (await session.execute(select(Workflow).where(Workflow.deleted_at.is_(None)))).scalars().all()
+    return sum(1 for w in rows if permissions.can_view_workflow(user, w))

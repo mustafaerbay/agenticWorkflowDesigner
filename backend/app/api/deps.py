@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.db import get_session
 from app.core.security import decode_access_token
 from app.models import AuditLog, User, Workflow, WorkflowRun
@@ -52,11 +53,11 @@ def get_bus(request: Request) -> Bus:
 
 
 def can_read_workflow(user: User, workflow: Workflow) -> bool:
-    return user.role == "admin" or workflow.owner_id == user.id or workflow.is_example
+    return permissions.can_view_workflow(user, workflow)
 
 
 def can_write_workflow(user: User, workflow: Workflow) -> bool:
-    return user.role == "admin" or (user.role == "editor" and workflow.owner_id == user.id)
+    return permissions.can_edit_workflow(user, workflow)
 
 
 async def load_workflow(session: AsyncSession, workflow_id: uuid.UUID, user: User, write: bool = False) -> Workflow:
@@ -72,13 +73,11 @@ async def load_run(session: AsyncSession, run_id: uuid.UUID, user: User, write: 
     run = await session.get(WorkflowRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Execution not found")
-    if user.role != "admin":
-        workflow = await session.get(Workflow, run.workflow_id)
-        allowed = run.created_by == user.id or (workflow is not None and workflow.owner_id == user.id)
-        if not allowed:
-            raise HTTPException(status_code=404, detail="Execution not found")
-        if write and user.role == "viewer":
-            raise HTTPException(status_code=403, detail="Read-only account")
+    workflow = await session.get(Workflow, run.workflow_id)
+    if not permissions.can_view_run(user, run, workflow):
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if write and user.role == "viewer":
+        raise HTTPException(status_code=403, detail="Read-only account")
     return run
 
 

@@ -243,9 +243,20 @@ async def _task_create(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]
                                       args.get("due_in_days"))
 
 
+async def _guard(ctx: ToolContext, tool: str, sample: dict[str, Any]) -> dict[str, Any] | None:
+    """Sensitive actions: simulated in simulation runs; otherwise require a prior approval in the run."""
+    services = _services(ctx)
+    if services.run.mode == "simulation":
+        return {**sample, "_simulated": True, "_simulation_note": f"'{tool}' is never executed in a simulation"}
+    await services.require_prior_approval(tool)
+    return None
+
+
 async def _email_send(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     from app.connections.connectors import send_email
 
+    if (simulated := await _guard(ctx, "email_send", {"sent": True, "message_id": "(simulated)", "recipients": []})):
+        return simulated
     connection, secret = await _services(ctx).connection("smtp")
     return await send_email(connection.config, secret, args["to"], args["subject"], args["body"])
 
@@ -253,6 +264,9 @@ async def _email_send(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 async def _http_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     from app.connections.connectors import http_call
 
+    if str(args.get("method") or "GET").upper() != "GET" and (
+            simulated := await _guard(ctx, "http_request", {"status": 200, "ok": True, "data": {}})):
+        return simulated
     connection, secret = await _services(ctx).connection("http")
     return await http_call(connection.config, secret, args.get("method") or "GET", args["path"], args.get("body"))
 
@@ -260,6 +274,8 @@ async def _http_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any
 async def _chat_post(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     from app.connections.connectors import post_chat
 
+    if (simulated := await _guard(ctx, "chat_post", {"posted": True})):
+        return simulated
     connection, secret = await _services(ctx).connection("chat")
     return await post_chat(connection.connector, secret or "", args["text"])
 

@@ -13,6 +13,8 @@ class UserOut(ORM):
     email: str
     name: str
     role: str
+    memberships: list[dict[str, Any]] = []
+    is_active: bool = True
 
 
 class LoginIn(BaseModel):
@@ -27,6 +29,7 @@ class TokenOut(BaseModel):
 
 
 class WorkflowIn(BaseModel):
+    department: str | None = None
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5000)
     definition: dict[str, Any] = Field(default_factory=lambda: {"nodes": [], "edges": [], "settings": {}})
@@ -59,10 +62,19 @@ class WorkflowSummary(BaseModel):
     node_count: int
     last_run_status: str | None
     is_example: bool
+    department: str | None = None
+    status: str = "enabled"
+    enabled_version: int | None = None
+    has_plan: bool = False
+    plan_meta: dict[str, Any] | None = None
+    can_edit: bool | None = None
+    can_enable: bool | None = None
 
 
 class WorkflowOut(WorkflowSummary):
     definition: dict[str, Any]
+    plan: dict[str, Any] | None = None
+    explanation: dict[str, Any] | None = None
 
 
 class ExecuteIn(BaseModel):
@@ -71,6 +83,9 @@ class ExecuteIn(BaseModel):
 
 class RunSummary(BaseModel):
     id: str
+    mode: str = "real"
+    triggered_by: str = "manual"
+    department: str | None = None
     workflow_id: str
     workflow_name: str
     workflow_version: int
@@ -143,6 +158,7 @@ class AgentIn(BaseModel):
 
 
 class AgentOut(AgentIn):
+    profile: dict[str, Any] = {}
     id: str
     version: int
     created_at: datetime
@@ -172,6 +188,11 @@ class ProviderTestOut(BaseModel):
 
 
 class ApprovalOut(BaseModel):
+    department: str | None = None
+    required_role: str = "approver"
+    separation_of_duties: bool = False
+    can_decide: bool = True
+    reason_cannot_decide: str | None = None
     id: str
     run_id: str
     node_id: str
