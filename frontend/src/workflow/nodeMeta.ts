@@ -243,15 +243,22 @@ function labelForDefault(c: ConditionNodeConfig): string {
   const h = c.default_handle || "default";
   if (h === "false") return "False";
   if (h === "default") return "Default";
+  if (h === "otherwise") return "Otherwise";
   return `${h} (default)`;
 }
 
 /** Label to render on an edge from a given source handle (condition / approval only). */
 export function handleLabel(type: NodeType | undefined, config: AnyNodeConfig | undefined, handle: string | null | undefined): string | undefined {
   if (!type || !handle) return undefined;
+  if (handle === "error" && (type === "agent" || type === "tool")) return "If it fails";
   if (type !== "condition" && type !== "approval") return undefined;
   const h = sourceHandles(type, config).find((x) => x.id === handle);
   return h?.label || handle;
+}
+
+/** Agent and tool nodes also have an "error" handle, taken only after retries are exhausted. */
+export function hasErrorHandle(type: NodeType): boolean {
+  return type === "agent" || type === "tool";
 }
 
 export function isMultiHandle(type: NodeType): boolean {

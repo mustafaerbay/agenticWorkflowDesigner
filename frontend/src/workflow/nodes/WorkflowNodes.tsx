@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import { Handle, Position, type NodeProps, type NodeTypes } from "@xyflow/react";
-import { Coins, Repeat } from "lucide-react";
+import { Coins, FlaskConical, Repeat, ShieldCheck, UserCheck } from "lucide-react";
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
@@ -13,8 +13,9 @@ import type {
 } from "@/types";
 import { cn, formatDuration } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
-import { NODE_META, sourceHandles, type HandleInfo } from "../nodeMeta";
-import type { FlowNode, NodeRuntime } from "../types";
+import { hasErrorHandle, NODE_META, sourceHandles, type HandleInfo } from "../nodeMeta";
+import type { FlowNode, FlowNodeData, NodeRuntime } from "../types";
+import { useNodeDisplayMode } from "./displayMode";
 
 // ---------------------------------------------------------------------------
 // Status styling (execution mode)
@@ -60,7 +61,7 @@ function useNow(active: boolean): number {
   return now;
 }
 
-function RuntimeFooter({ rt }: { rt: NodeRuntime }) {
+function RuntimeFooter({ rt, business }: { rt: NodeRuntime; business: boolean }) {
   const running = rt.status === "RUNNING";
   const now = useNow(running);
   const elapsed = rt.startedAt
@@ -75,6 +76,15 @@ function RuntimeFooter({ rt }: { rt: NodeRuntime }) {
         <span className={cn("font-medium", STATUS_TEXT[rt.status] ?? "text-muted-foreground")}>
           {rt.status === "WAITING" ? "Waiting for approval" : statusLabel(rt.status)}
         </span>
+        {rt.simulated && (
+          <span
+            className="flex items-center gap-0.5 rounded bg-violet-500/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300"
+            title={rt.simulationNote ?? "Simulated — nothing was sent or changed"}
+            data-testid="simulated-badge"
+          >
+            <FlaskConical className="size-2.5" aria-hidden /> Simulated
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-2 text-muted-foreground tabular-nums">
           {rt.runs > 1 && (
             <span className="flex items-center gap-0.5" title={`${rt.runs} runs`}>
@@ -94,7 +104,7 @@ function RuntimeFooter({ rt }: { rt: NodeRuntime }) {
           {rt.error}
         </p>
       )}
-      {rt.totalTokens != null && rt.totalTokens > 0 && (
+      {!business && rt.totalTokens != null && rt.totalTokens > 0 && (
         <p className="flex items-center gap-1 text-muted-foreground tabular-nums">
           <Coins className="size-3" aria-hidden /> {rt.totalTokens.toLocaleString()} tokens
         </p>
@@ -166,6 +176,33 @@ function subtitle(type: NodeType, config: unknown): React.ReactNode {
   }
 }
 
+/** Plain-language subtitle for business display mode. */
+export function businessSubtitle(type: NodeType, data: Pick<FlowNodeData, "business" | "config">): string {
+  const b = data.business;
+  switch (type) {
+    case "approval":
+      return "Needs approval";
+    case "condition":
+      return "Decision";
+    case "delay":
+      return "Wait";
+    case "start":
+      return b?.description || "Start";
+    case "end":
+      return "Finish";
+    case "fail":
+      return "Stop";
+    case "parallel":
+      return "Runs several paths at once";
+    case "join":
+      return "Waits for paths to finish";
+    case "agent":
+      return b?.app || "AI step";
+    case "tool":
+      return b?.app || "App action";
+  }
+}
+
 function BaseNode({ id, type, data, selected }: NodeProps<FlowNode>) {
   const t = type as NodeType;
   const meta = NODE_META[t];
@@ -173,7 +210,10 @@ function BaseNode({ id, type, data, selected }: NodeProps<FlowNode>) {
   const rt = data.runtime;
   const handles = sourceHandles(t, data.config);
   const multi = t === "condition" || t === "approval";
-  const scripted = t === "agent" && (data.config as AgentNodeConfig).kind === "scripted";
+  const mode = useNodeDisplayMode();
+  const business = mode === "business";
+  const scripted = !business && t === "agent" && (data.config as AgentNodeConfig).kind === "scripted";
+  const title = business ? data.business?.title || data.label || meta.title : data.label || meta.title;
 
   return (
     <div
@@ -184,6 +224,7 @@ function BaseNode({ id, type, data, selected }: NodeProps<FlowNode>) {
       )}
       data-testid={`node-${id}`}
       data-status={rt?.status}
+      data-display={mode}
     >
       {meta.hasTarget && (
         <Handle type="target" position={Position.Left} id="in" aria-label="Input" />
@@ -194,22 +235,44 @@ function BaseNode({ id, type, data, selected }: NodeProps<FlowNode>) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <p className="truncate text-[13px] font-semibold leading-5">{data.label || meta.title}</p>
+            <p className="truncate text-[13px] font-semibold leading-5" title={title}>
+              {title}
+            </p>
             {scripted && (
               <span className="shrink-0 rounded bg-muted px-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
                 no llm
               </span>
             )}
           </div>
-          <p className="truncate text-[11px] text-muted-foreground">{subtitle(t, data.config)}</p>
-          <p className="truncate font-mono text-[10px] text-muted-foreground/70">{id}</p>
+          <p className="truncate text-[11px] text-muted-foreground">{business ? businessSubtitle(t, data) : subtitle(t, data.config)}</p>
+          {business ? (
+            (data.business?.policy_inserted || data.business?.requires_action) && (
+              <p className="mt-0.5 flex flex-wrap items-center gap-1">
+                {data.business?.policy_inserted && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-info/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-info">
+                    <ShieldCheck className="size-2.5" aria-hidden /> Policy
+                  </span>
+                )}
+                {data.business?.requires_action && t !== "start" && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-warning/20 px-1 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-warning">
+                    <UserCheck className="size-2.5" aria-hidden /> Person acts
+                  </span>
+                )}
+              </p>
+            )
+          ) : (
+            <p className="truncate font-mono text-[10px] text-muted-foreground/70">{id}</p>
+          )}
         </div>
       </div>
       {multi && <HandleRows handles={handles} />}
       {!multi && handles.length > 0 && (
         <Handle type="source" position={Position.Right} id="out" aria-label="Output" />
       )}
-      {rt && <RuntimeFooter rt={rt} />}
+      {hasErrorHandle(t) && (
+        <Handle type="source" position={Position.Bottom} id="error" className="handle-error" aria-label="If it fails" title="If it fails" />
+      )}
+      {rt && <RuntimeFooter rt={rt} business={business} />}
     </div>
   );
 }

@@ -18,6 +18,9 @@ import {
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { UnsupportedEditDialog } from "@/components/business/UnsupportedEditDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -25,10 +28,10 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { RunWorkflowDialog } from "@/components/RunWorkflowDialog";
 import { ErrorState } from "@/components/States";
-import { api, ApiError, errorMessage, queryKeys } from "@/services/api";
+import { api, ApiError, errorDetailField, errorMessage, queryKeys } from "@/services/api";
 import { useUiStore } from "@/stores/ui";
 import { cn } from "@/lib/utils";
-import type { ValidationResult } from "@/types";
+import type { UnsupportedEdit, ValidationResult } from "@/types";
 import { ConfigPanel } from "@/workflow/editor/ConfigPanel";
 import { addNodeChecked, EditorCanvas } from "@/workflow/editor/EditorCanvas";
 import { Palette } from "@/workflow/editor/Palette";
@@ -97,6 +100,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const { fitView, setCenter, getNode, screenToFlowPosition } = useReactFlow();
   const paletteCollapsed = useUiStore((s) => s.paletteCollapsed);
   const togglePalette = useUiStore((s) => s.togglePalette);
+  const advanced = useUiStore((s) => s.advancedMode);
+  const setAdvanced = useUiStore((s) => s.setAdvancedMode);
+  const [unsupported, setUnsupported] = useState<{ message: string; items: UnsupportedEdit[] } | null>(null);
   const [showValidation, setShowValidation] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
   // Snapshot once per opening so the dialog sees a stable definition.
@@ -104,8 +110,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const wfQuery = useQuery({ queryKey: queryKeys.workflow(workflowId), queryFn: () => api.getWorkflow(workflowId) });
-  const { name, version, dirty, validation, canUndo, canRedo, loadedId } = useEditorStore(
+  const { name, version, dirty, validation, canUndo, canRedo, loadedId, hasPlan } = useEditorStore(
     useShallow((s) => ({
+      hasPlan: s.hasPlan,
       name: s.name,
       version: s.version,
       dirty: s.dirty,
@@ -136,18 +143,46 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       });
     },
     onSuccess: (wf) => {
-      store.getState().markSaved(wf);
+      // Plan-based workflows are recompiled by the server: reload so business labels and metadata stay current.
+      if (wf.has_plan && wf.definition) store.getState().load(wf);
+      else store.getState().markSaved(wf);
       qc.setQueryData(queryKeys.workflow(workflowId), wf);
       void qc.invalidateQueries({ queryKey: queryKeys.workflowsAll });
       toast.success(`Saved · version ${wf.version}`);
     },
     onError: (e) => {
+      const items = errorDetailField<UnsupportedEdit[]>(e, "unsupported");
+      if (e instanceof ApiError && e.status === 422 && Array.isArray(items)) {
+        const nodes: Record<string, string[]> = {};
+        const edges: Record<string, string[]> = {};
+        for (const u of items) {
+          if (u.node_id) (nodes[u.node_id] ??= []).push(u.message);
+          if (u.edge_id) (edges[u.edge_id] ??= []).push(u.message);
+        }
+        store.getState().setHighlights(nodes, edges);
+        setUnsupported({ message: errorDetailField<string>(e, "message") ?? "", items });
+        return;
+      }
       if (e instanceof ApiError && e.validation) {
         store.getState().setValidation(e.validation);
         setShowValidation(true);
       }
       toast.error(`Save failed: ${errorMessage(e)}`);
     },
+  });
+
+  const detach = useMutation({
+    mutationFn: () => api.detachWorkflow(workflowId),
+    onSuccess: (wf) => {
+      useEditorStore.setState({ hasPlan: false, meta: null });
+      qc.setQueryData(queryKeys.workflow(workflowId), wf);
+      void qc.invalidateQueries({ queryKey: queryKeys.workflowsAll });
+      setUnsupported(null);
+      store.getState().setHighlights({});
+      toast.success("Detached from the business plan — saving your changes");
+      save.mutate();
+    },
+    onError: (e) => toast.error(`Detach failed: ${errorMessage(e)}`),
   });
 
   const validate = useMutation({
@@ -261,7 +296,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-card px-2 sm:px-3">
         <Tooltip content="Back to workflows">
           <Button variant="ghost" size="icon-sm" asChild>
-            <Link to="/workflows" aria-label="Back to workflows">
+            <Link to={hasPlan ? `/workflows/${workflowId}` : "/workflows"} aria-label="Back to workflows">
               <ArrowLeft />
             </Link>
           </Button>
@@ -286,7 +321,18 @@ function EditorInner({ workflowId }: { workflowId: string }) {
             All changes saved
           </span>
         )}
+        {hasPlan && (
+          <Badge variant="info" className="hidden lg:inline-flex" title="Edits are translated into business steps when you save">
+            Business workflow
+          </Badge>
+        )}
         <div className="ml-auto flex items-center gap-1">
+          <div className="mr-1 flex items-center gap-1.5">
+            <Switch id="advanced-toggle" checked={advanced} onCheckedChange={setAdvanced} aria-label="Advanced mode" />
+            <Label htmlFor="advanced-toggle" className="hidden cursor-pointer text-xs text-muted-foreground sm:inline">
+              Advanced
+            </Label>
+          </div>
           <Tooltip content="Undo (⌘Z)">
             <Button variant="ghost" size="icon-sm" aria-label="Undo" disabled={!canUndo} onClick={() => store.getState().undo()}>
               <Undo2 />
@@ -356,6 +402,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         workflowId={workflowId}
         workflowName={name}
         definition={runDefinition}
+        plan={wfQuery.data?.plan ?? null}
+        department={wfQuery.data?.department ?? null}
         beforeRun={async () => {
           if (!store.getState().dirty) return true;
           try {
@@ -365,6 +413,18 @@ function EditorInner({ workflowId }: { workflowId: string }) {
             return false;
           }
         }}
+      />
+      <UnsupportedEditDialog
+        open={!!unsupported}
+        onOpenChange={(o) => !o && setUnsupported(null)}
+        message={unsupported?.message ?? ""}
+        unsupported={unsupported?.items ?? []}
+        onFocus={(id) => {
+          setUnsupported(null);
+          focusNode(id);
+        }}
+        onDetach={() => detach.mutate()}
+        detaching={detach.isPending || save.isPending}
       />
       <ConfirmDialog
         open={blocker.state === "blocked"}

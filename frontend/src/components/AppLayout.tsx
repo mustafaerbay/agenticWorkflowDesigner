@@ -5,7 +5,11 @@ import {
   Bot,
   Cpu,
   History,
+  Inbox,
   LayoutDashboard,
+  LayoutTemplate,
+  Plug,
+  Users,
   LogOut,
   Menu,
   PanelLeftClose,
@@ -26,6 +30,7 @@ import {
 import { Tooltip } from "@/components/ui/tooltip";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { api, queryKeys } from "@/services/api";
+import { unreadCount, useInbox } from "@/services/queries";
 import { useAuthStore } from "@/stores/auth";
 import { useUiStore } from "@/stores/ui";
 import { cn } from "@/lib/utils";
@@ -35,7 +40,8 @@ interface NavItem {
   label: string;
   icon: LucideIcon;
   end?: boolean;
-  badge?: "approvals";
+  badge?: "approvals" | "inbox";
+  adminOnly?: boolean;
 }
 
 const NAV: { section: string; items: NavItem[] }[] = [
@@ -44,6 +50,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
       { to: "/workflows", label: "Workflows", icon: Workflow },
+      { to: "/templates", label: "Templates", icon: LayoutTemplate },
       { to: "/agents", label: "Agents", icon: Bot },
     ],
   },
@@ -52,9 +59,17 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/executions", label: "Executions", icon: History },
       { to: "/approvals", label: "Approvals", icon: ShieldCheck, badge: "approvals" },
+      { to: "/inbox", label: "Inbox", icon: Inbox, badge: "inbox" },
     ],
   },
-  { section: "Configure", items: [{ to: "/settings/models", label: "Model Settings", icon: Cpu }] },
+  {
+    section: "Configure",
+    items: [
+      { to: "/settings/models", label: "Model Settings", icon: Cpu },
+      { to: "/settings/connections", label: "Connections", icon: Plug, adminOnly: true },
+      { to: "/settings/users", label: "Users", icon: Users, adminOnly: true },
+    ],
+  },
 ];
 
 function Logo({ collapsed }: { collapsed: boolean }) {
@@ -73,10 +88,22 @@ function Logo({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function SidebarNav({ collapsed, pending, onNavigate }: { collapsed: boolean; pending: number; onNavigate?: () => void }) {
+function SidebarNav({
+  collapsed,
+  pending,
+  unread,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  pending: number;
+  unread: number;
+  onNavigate?: () => void;
+}) {
+  const admin = useAuthStore((s) => s.user?.role === "admin");
+  const groups = NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.adminOnly || admin) }));
   return (
     <nav className="flex-1 space-y-4 overflow-y-auto px-2 py-3" aria-label="Main">
-      {NAV.map((group) => (
+      {groups.map((group) => (
         <div key={group.section}>
           {!collapsed && (
             <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">{group.section}</p>
@@ -84,7 +111,8 @@ function SidebarNav({ collapsed, pending, onNavigate }: { collapsed: boolean; pe
           <ul className="space-y-0.5">
             {group.items.map((item) => {
               const Icon = item.icon;
-              const badge = item.badge === "approvals" && pending > 0 ? pending : null;
+              const count = item.badge === "approvals" ? pending : item.badge === "inbox" ? unread : 0;
+              const badge = count > 0 ? count : null;
               const link = (
                 <NavLink
                   to={item.to}
@@ -109,7 +137,7 @@ function SidebarNav({ collapsed, pending, onNavigate }: { collapsed: boolean; pe
                         "rounded-full bg-warning px-1.5 text-[10px] font-semibold leading-4 text-black",
                         collapsed ? "absolute -right-0.5 -top-0.5" : "ml-auto",
                       )}
-                      aria-label={`${badge} pending`}
+                      aria-label={item.badge === "inbox" ? `${badge} unread` : `${badge} pending`}
                     >
                       {badge}
                     </span>
@@ -185,6 +213,8 @@ export function AppLayout() {
   }, [me.data, setUser]);
   useEffect(() => setMobileOpen(false), [loc.pathname]);
   const pending = approvals.data?.length ?? 0;
+  const inbox = useInbox();
+  const unread = unreadCount(inbox.data);
 
   return (
     <div className="flex h-full">
@@ -206,7 +236,7 @@ export function AppLayout() {
             </Button>
           )}
         </div>
-        <SidebarNav collapsed={collapsed} pending={pending} />
+        <SidebarNav collapsed={collapsed} pending={pending} unread={unread} />
         <div className={cn("space-y-1 border-t p-2", collapsed && "flex flex-col items-center")}>
           {collapsed && (
             <Button variant="ghost" size="icon-sm" onClick={toggle} aria-label="Expand sidebar">
@@ -230,7 +260,7 @@ export function AppLayout() {
             <div className="flex h-12 items-center border-b px-3">
               <Logo collapsed={false} />
             </div>
-            <SidebarNav collapsed={false} pending={pending} onNavigate={() => setMobileOpen(false)} />
+            <SidebarNav collapsed={false} pending={pending} unread={unread} onNavigate={() => setMobileOpen(false)} />
             <div className="flex items-center gap-1 border-t p-2">
               <div className="min-w-0 flex-1">
                 <UserMenu collapsed={false} />

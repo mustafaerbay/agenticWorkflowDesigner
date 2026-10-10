@@ -12,7 +12,10 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/States";
 import { StatusBadge } from "@/components/StatusBadge";
+import { DepartmentBadge, SeparationOfDutiesBadge } from "@/components/business/Pills";
+import { departmentName } from "@/business/labels";
 import { api, errorMessage, queryKeys } from "@/services/api";
+import { useDepartments } from "@/services/queries";
 import { formatDate, formatRelative } from "@/lib/utils";
 import type { Approval } from "@/types";
 
@@ -23,6 +26,7 @@ export default function ApprovalsPage() {
   const [pendingDecision, setPendingDecision] = useState<Decision | null>(null);
   const [comment, setComment] = useState("");
   const qc = useQueryClient();
+  const departments = useDepartments();
 
   const list = useQuery({
     queryKey: queryKeys.approvals(tab === "pending" ? "pending" : undefined),
@@ -75,11 +79,24 @@ export default function ApprovalsPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="font-medium">{a.title}</p>
                       <StatusBadge status={a.status} />
+                      {a.department && (
+                        <DepartmentBadge
+                          name={departmentName(a.department, departments.data)}
+                          sensitive={departments.data?.find((d) => d.code === a.department)?.sensitive}
+                        />
+                      )}
+                      {a.separation_of_duties && <SeparationOfDutiesBadge />}
                     </div>
                     {a.description && <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{a.description}</p>}
                     <p className="mt-2 text-xs text-muted-foreground">
-                      {a.workflow_name} · node <code className="font-mono">{a.node_id}</code> · requested {formatRelative(a.requested_at)}
+                      {a.workflow_name} · requested {formatRelative(a.requested_at)}
+                      {a.required_role && <> · needs a {a.required_role.replace("_", " ")}</>}
                     </p>
+                    {a.status === "pending" && a.can_decide === false && (
+                      <p className="mt-1 text-xs text-amber-700 dark:text-warning" data-testid="cannot-decide">
+                        {a.reason_cannot_decide || "You can't decide this approval."}
+                      </p>
+                    )}
                     {a.status !== "pending" && (
                       <p className="mt-1 text-xs text-muted-foreground">
                         {a.status === "cancelled" ? "Cancelled" : `Decided by ${a.decided_by ?? "unknown"}`} · {formatDate(a.decided_at)}
@@ -95,10 +112,10 @@ export default function ApprovalsPage() {
                     </Button>
                     {a.status === "pending" && (
                       <>
-                        <Button size="sm" variant="success" onClick={() => setPendingDecision({ approval: a, decision: "approve" })}>
+                        <Button size="sm" variant="success" disabled={a.can_decide === false} onClick={() => setPendingDecision({ approval: a, decision: "approve" })}>
                           <Check /> Approve
                         </Button>
-                        <Button size="sm" variant="destructive" onClick={() => setPendingDecision({ approval: a, decision: "reject" })}>
+                        <Button size="sm" variant="destructive" disabled={a.can_decide === false} onClick={() => setPendingDecision({ approval: a, decision: "reject" })}>
                           <X /> Reject
                         </Button>
                       </>

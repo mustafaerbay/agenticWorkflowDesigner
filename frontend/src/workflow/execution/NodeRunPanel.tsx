@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { FlaskConical, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { JsonView } from "@/components/JsonField";
 import { StatusBadge } from "@/components/StatusBadge";
 import { cn, formatDate, formatDuration } from "@/lib/utils";
-import type { NodeRun, NodeType } from "@/types";
+import type { BusinessNodeInfo, NodeRun, NodeType } from "@/types";
 import { NODE_META } from "../nodeMeta";
+import { simulationInfo } from "./runtime";
 
 const LOG_COLORS: Record<string, string> = {
   error: "text-destructive",
@@ -22,12 +23,15 @@ export function NodeRunPanel({
   label,
   runs,
   onClose,
+  business,
 }: {
   nodeId: string;
   nodeType: NodeType;
   label: string;
   runs: NodeRun[];
   onClose: () => void;
+  /** Business mode: plain-language description of the step (hides the technical id). */
+  business?: BusinessNodeInfo;
 }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   useEffect(() => setSelectedRunId(null), [nodeId]);
@@ -44,7 +48,11 @@ export function NodeRunPanel({
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold">{label}</h3>
-          <p className="font-mono text-[11px] text-muted-foreground">{nodeId}</p>
+          {business ? (
+            <p className="text-[11px] text-muted-foreground">{business.description || business.app || ""}</p>
+          ) : (
+            <p className="font-mono text-[11px] text-muted-foreground">{nodeId}</p>
+          )}
         </div>
         <Button variant="ghost" size="icon-sm" aria-label="Close node details" onClick={onClose}>
           <X />
@@ -54,6 +62,18 @@ export function NodeRunPanel({
         <p className="p-4 text-xs text-muted-foreground">This node has not run yet.</p>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {(() => {
+            const sim = simulationInfo(run.output);
+            return sim.simulated ? (
+              <div className="mb-4 flex items-start gap-2 rounded-md border border-violet-500/40 bg-violet-500/10 p-2.5 text-xs" data-testid="node-simulated">
+                <FlaskConical className="mt-px size-4 shrink-0 text-violet-600 dark:text-violet-300" aria-hidden />
+                <div>
+                  <Badge variant="outline" className="border-violet-500/50 text-violet-700 dark:text-violet-300">Simulated</Badge>
+                  <p className="mt-1 text-muted-foreground">{sim.simulationNote ?? "This result is a sample. Nothing was sent or changed."}</p>
+                </div>
+              </div>
+            ) : null;
+          })()}
           <dl className="mb-4 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
             <dt className="text-muted-foreground">Status</dt>
             <dd><StatusBadge status={run.status} /></dd>
@@ -63,7 +83,7 @@ export function NodeRunPanel({
             <dd>{formatDate(run.started_at)}</dd>
             <dt className="text-muted-foreground">Duration</dt>
             <dd className="tabular-nums">{formatDuration(run.duration_ms)}</dd>
-            {run.agent_kind && (
+            {run.agent_kind && !business && (
               <>
                 <dt className="text-muted-foreground">Agent</dt>
                 <dd>
@@ -72,7 +92,7 @@ export function NodeRunPanel({
                 </dd>
               </>
             )}
-            {run.usage && (
+            {run.usage && !business && (
               <>
                 <dt className="text-muted-foreground">Tokens</dt>
                 <dd className="tabular-nums">
@@ -85,7 +105,7 @@ export function NodeRunPanel({
             )}
             {run.selected_handle && (
               <>
-                <dt className="text-muted-foreground">Selected branch</dt>
+                <dt className="text-muted-foreground">{business ? "Path taken" : "Selected branch"}</dt>
                 <dd><code className="font-mono">{run.selected_handle}</code></dd>
               </>
             )}
@@ -96,7 +116,7 @@ export function NodeRunPanel({
               <TabsTrigger value="input">Input</TabsTrigger>
               <TabsTrigger value="output">Output</TabsTrigger>
               <TabsTrigger value="logs">Logs {run.logs.length > 0 && <span className="text-muted-foreground">{run.logs.length}</span>}</TabsTrigger>
-              <TabsTrigger value="tools">Tool calls {run.tool_calls.length > 0 && <span className="text-muted-foreground">{run.tool_calls.length}</span>}</TabsTrigger>
+              <TabsTrigger value="tools">{business ? "App actions" : "Tool calls"} {run.tool_calls.length > 0 && <span className="text-muted-foreground">{run.tool_calls.length}</span>}</TabsTrigger>
               <TabsTrigger value="errors" className={cn(errorsCount > 0 && "text-destructive")}>Errors {errorsCount > 0 && errorsCount}</TabsTrigger>
               <TabsTrigger value="attempts">Attempts {runs.length}</TabsTrigger>
             </TabsList>

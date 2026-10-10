@@ -8,11 +8,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
-import { api, ApiError, queryKeys } from "@/services/api";
+import { FileUploadField } from "@/components/business/FileUploadField";
+import { coerceInputs, initialInputValues, planInputsOf, type InputValues } from "@/business/inputs";
+import { PlanInputsForm } from "@/components/business/PlanInputsForm";
+import { api, ApiError, errorDetailField, queryKeys } from "@/services/api";
 import { useTools } from "@/services/queries";
 import { missingRequired, runInputSpec } from "@/workflow/runInputs";
 import { isPlainObject, parseJson, prettyJson } from "@/lib/utils";
-import type { Issue, JSONObject, WorkflowDefinition } from "@/types";
+import type { BusinessPlan, Issue, JSONObject, WorkflowDefinition } from "@/types";
 
 export function RunWorkflowDialog({
   open,
@@ -21,6 +24,8 @@ export function RunWorkflowDialog({
   workflowName,
   definition,
   beforeRun,
+  plan,
+  department,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -30,6 +35,9 @@ export function RunWorkflowDialog({
   definition: WorkflowDefinition | null | undefined;
   /** e.g. save unsaved editor changes first; return false to abort */
   beforeRun?: () => Promise<boolean>;
+  /** Business plan (if any): its file inputs get an upload control. */
+  plan?: BusinessPlan | null;
+  department?: string | null;
 }) {
   const [text, setText] = useState("{}");
   const [error, setError] = useState<string | null>(null);
@@ -39,12 +47,39 @@ export function RunWorkflowDialog({
   const tools = useTools();
   const spec = useMemo(() => runInputSpec(definition, tools.data ?? []), [definition, tools.data]);
   const edited = useRef(false);
+  const fileInputs = useMemo(() => planInputsOf(plan, definition).filter((i) => i.type === "file"), [plan, definition]);
+  // Business workflows get a plain form instead of JSON.
+  const businessInputs = plan ? plan.inputs : null;
+  const [values, setValues] = useState<InputValues>({});
+  const currentObject = (): JSONObject | null => {
+    const r = parseJson(text.trim() || "{}");
+    return r.ok && isPlainObject(r.value) ? (r.value as JSONObject) : null;
+  };
+  const setFileId = (key: string, fileId: string) => {
+    const obj = currentObject();
+    if (!obj) {
+      setError("Fix the input JSON before attaching a file");
+      return;
+    }
+    const next = { ...obj };
+    if (fileId) next[key] = fileId;
+    else delete next[key];
+    edited.current = true;
+    setText(prettyJson(next));
+    setError(null);
+  };
 
   useEffect(() => {
     edited.current = false;
     setError(null);
     setIssues([]);
   }, [open]);
+
+  useEffect(() => {
+    // Prefill examples once the plan is known (it may load after the dialog opens).
+    if (open && businessInputs) setValues((v) => (Object.keys(v).length ? v : initialInputValues(businessInputs)));
+    if (!open) setValues({});
+  }, [open, businessInputs]);
 
   useEffect(() => {
     // Refresh the prefill (e.g. once tools load) until the user starts editing.
@@ -64,6 +99,11 @@ export function RunWorkflowDialog({
       navigate(`/executions/${r.id}`);
     },
     onError: (e) => {
+      const missingInputs = errorDetailField<string[]>(e, "missing_inputs");
+      if (Array.isArray(missingInputs) && missingInputs.length) {
+        setError(`Missing required input${missingInputs.length > 1 ? "s" : ""}: ${missingInputs.join(", ")}`);
+        return;
+      }
       if (e instanceof ApiError && e.validation) {
         setIssues(e.validation.errors);
         setError("The workflow is invalid. Fix these issues and try again.");
@@ -74,6 +114,15 @@ export function RunWorkflowDialog({
   });
 
   const submit = () => {
+    if (businessInputs) {
+      const { input, missing, invalid } = coerceInputs(businessInputs, values);
+      if (missing.length) return setError(`Please fill in: ${missing.join(", ")}`);
+      if (invalid.length) return setError(`Please enter a number for: ${invalid.join(", ")}`);
+      setError(null);
+      setIssues([]);
+      run.mutate(input);
+      return;
+    }
     const r = parseJson(text.trim() || "{}");
     if (!r.ok) return setError(`Invalid JSON: ${r.error}`);
     if (!isPlainObject(r.value)) return setError("Input must be a JSON object");
@@ -91,8 +140,46 @@ export function RunWorkflowDialog({
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Run “{workflowName}”</DialogTitle>
-          <DialogDescription>Provide the execution input. It is available to nodes as <code className="font-mono">input.*</code>.</DialogDescription>
+          <DialogDescription>
+            {businessInputs ? (
+              "Fill in the information this workflow needs."
+            ) : (
+              <>
+                Provide the execution input. It is available to nodes as <code className="font-mono">input.*</code>.
+              </>
+            )}
+          </DialogDescription>
         </DialogHeader>
+        {businessInputs && (
+          <div className="space-y-3">
+            <PlanInputsForm inputs={businessInputs} values={values} department={department} onChange={setValues} />
+            {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
+          </div>
+        )}
+        {!businessInputs && fileInputs.length > 0 && (
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-3" aria-label="Files">
+            <p className="text-xs font-medium">Files</p>
+            {fileInputs.map((fi) => {
+              const value = currentObject()?.[fi.key];
+              return (
+                <div key={fi.key} className="space-y-1">
+                  <Label htmlFor={`run-file-${fi.key}`}>
+                    {fi.label}
+                    {fi.required && <span className="text-destructive"> *</span>}
+                  </Label>
+                  <FileUploadField
+                    id={`run-file-${fi.key}`}
+                    label={fi.label}
+                    value={typeof value === "string" ? value : ""}
+                    department={department}
+                    onChange={(fileId) => setFileId(fi.key, fileId)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!businessInputs && (
         <div className="space-y-1.5">
           <Label htmlFor="run-input">Input (JSON)</Label>
           <Textarea
@@ -148,6 +235,7 @@ export function RunWorkflowDialog({
             </ul>
           )}
         </div>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

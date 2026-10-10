@@ -85,7 +85,8 @@ def explain_plan(plan: BusinessPlan, findings: list[Finding], capability_status:
                     "connector": cap.connector, "label": CONNECTOR_LABELS[cap.connector],
                     "status": status.get("status"), "steps": []})["steps"].append(step.title)
             if cap.side_effect in SENSITIVE_EFFECTS or cap.side_effect == "internal":
-                permissions.append({"step": step.title, "capability": cap.name, "side_effect": cap.side_effect,
+                permissions.append({"step": step.title, "step_id": step.id, "capability": cap.name,
+                                    "side_effect": cap.side_effect,
                                     "needs_authorization": cap.side_effect in SENSITIVE_EFFECTS})
         elif isinstance(step, DecisionStep):
             entry["what"] = "Decides how to continue."

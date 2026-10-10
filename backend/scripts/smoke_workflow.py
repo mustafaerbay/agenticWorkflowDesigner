@@ -161,6 +161,66 @@ async def db_counts(run_id: str) -> dict[str, int]:
         await conn.close()
 
 
+async def business_flow(c: "Client") -> None:
+    password = uuid.uuid4().hex
+    users = {"clerk": ["member", "builder"], "approver": ["approver"]}
+    created_users: list[str] = []
+    headers: dict[str, dict[str, str]] = {}
+    try:
+        for name, roles in users.items():
+            email = f"{TAG}-{name}@smoke.invalid"
+            r = await c.http.post("/api/users", json={"email": email, "name": f"{TAG} {name}", "password": password,
+                                                      "role": "editor",
+                                                      "memberships": [{"department": "finance", "roles": roles}]})
+            r.raise_for_status()
+            created_users.append(r.json()["id"])
+            token = (await c.http.post("/api/auth/login", json={"email": email, "password": password})).json()["access_token"]
+            headers[name] = {"Authorization": f"Bearer {token}"}
+        clerk, approver = headers["clerk"], headers["approver"]
+        templates = (await c.http.get("/api/templates", headers=clerk)).json()
+        check("14 department templates available", len(templates) == 14, f"{len(templates)} templates")
+        wf = (await c.http.post("/api/templates/finance_invoice/use", json={"name": f"{TAG} invoice"}, headers=clerk)).json()
+        c.created.append(wf["id"])
+        check("template creates a draft business workflow", wf.get("status") == "draft" and wf.get("has_plan") is True,
+              f"status={wf.get('status')} meta={wf.get('plan_meta')}")
+        invoice = b"Supplier: ACME\nInvoice number: INV-1\nIBAN: DE00 1234\nTotal: 20,000.00\n"
+        r = await c.http.post("/api/files", files={"file": ("invoice.txt", invoice, "text/plain")},
+                              data={"department": "finance"}, headers=clerk)
+        r.raise_for_status()
+        file_id = r.json()["id"]
+        run_input = {"invoice": file_id, "amount": 20000, "supplier": "ACME"}
+        blocked = await c.http.post(f"/api/workflows/{wf['id']}/execute", json={"input": run_input}, headers=clerk)
+        check("draft workflows cannot run before enabling", blocked.status_code == 409, f"HTTP {blocked.status_code}")
+        sim = (await c.http.post(f"/api/workflows/{wf['id']}/simulate", json={"input": run_input}, headers=clerk)).json()
+        sim = await c.wait(sim["id"], {"COMPLETED", "FAILED", "CANCELLED"})
+        nodes = {nr["node_id"]: nr for nr in sim["node_runs"]}
+        check("simulation reads the real invoice and takes the large-amount branch",
+              sim["status"] == "COMPLETED" and nodes["check_invoice"]["output"].get("all_present") is True
+              and nodes["large_amount"]["selected_handle"] == "large",
+              f"{sim['status']} {sim.get('error') or ''}")
+        check("simulation performs no side effects", nodes["notify_payables"]["output"].get("_simulated") is True
+              and (await c.http.get("/api/inbox", headers=clerk)).json() == [])
+        enabled = (await c.http.post(f"/api/workflows/{wf['id']}/enable", json={"acknowledgements": []}, headers=clerk)).json()
+        check("workflow enabled", enabled.get("status") == "enabled", str(enabled.get("status")))
+        run = (await c.http.post(f"/api/workflows/{wf['id']}/execute", json={"input": run_input}, headers=clerk)).json()
+        waiting = await c.wait(run["id"], {"WAITING_APPROVAL", "COMPLETED", "FAILED", "CANCELLED"})
+        approval = next(a for a in (await c.http.get("/api/approvals?status=pending", headers=approver)).json()
+                        if a["run_id"] == run["id"])
+        self_approve = await c.http.post(f"/api/approvals/{approval['id']}/decision", json={"decision": "approve"},
+                                         headers=clerk)
+        check("separation of duties blocks self-approval", waiting["status"] == "WAITING_APPROVAL"
+              and self_approve.status_code == 403, f"HTTP {self_approve.status_code}")
+        await c.http.post(f"/api/approvals/{approval['id']}/decision", json={"decision": "approve"}, headers=approver)
+        final = await c.wait(run["id"], {"COMPLETED", "FAILED", "CANCELLED"})
+        inbox = (await c.http.get("/api/inbox", headers=clerk)).json()
+        check("approved business run completes and assigns the payables task",
+              final["status"] == "COMPLETED" and any("ACME" in i["title"] for i in inbox),
+              f"{final['status']} {final.get('error') or ''}")
+    finally:
+        for user_id in created_users:  # deactivate smoke users (kept for the audit trail)
+            await c.http.put(f"/api/users/{user_id}", json={"is_active": False})
+
+
 async def main() -> int:
     c = Client()
     try:
@@ -254,6 +314,8 @@ async def main() -> int:
             kinds = sorted(a["kind"] for a in final.get("artifacts", []))
             check("pipeline completes after approval with patch + report", final["status"] == "COMPLETED" and kinds == ["patch", "report"],
                   f"{final['status']} artifacts={kinds} {final.get('error') or ''}")
+        # 7. Business workflow: template -> simulate (no side effects) -> enable -> run -> approval (SoD).
+        await business_flow(c)
     except Exception as exc:  # report, don't hide
         check("smoke test crashed", False, f"{type(exc).__name__}: {exc}")
     finally:

@@ -1,5 +1,23 @@
 import { useAuthStore } from "@/stores/auth";
 import type {
+  Capability,
+  Connection,
+  ConnectionIn,
+  ConnectionTestResult,
+  ConnectorType,
+  Department,
+  DesignerSession,
+  DesignerStatus,
+  EnableRequest,
+  InboxItem,
+  PlanApplyRequest,
+  PlanOperation,
+  Proposal,
+  SimulateRequest,
+  UploadedFile,
+  UserCreate,
+  UserUpdate,
+  WorkflowTemplate,
   Agent,
   AgentIn,
   AgentPreset,
@@ -48,6 +66,14 @@ export class ApiError extends Error {
     }
     return null;
   }
+}
+
+/** A field of an object-shaped error `detail` (e.g. 422 `{detail: {message, findings}}`), or null. */
+export function errorDetailField<T = unknown>(e: unknown, key: string): T | null {
+  if (!(e instanceof ApiError)) return null;
+  const d = e.detail;
+  if (d && typeof d === "object" && !Array.isArray(d) && key in d) return (d as Record<string, unknown>)[key] as T;
+  return null;
 }
 
 function detailToMessage(detail: unknown, fallback: string): string {
@@ -116,7 +142,10 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   const token = useAuthStore.getState().token;
   if (opts.auth !== false && token) headers.Authorization = `Bearer ${token}`;
   let body: BodyInit | undefined;
-  if (opts.body !== undefined) {
+  if (typeof FormData !== "undefined" && opts.body instanceof FormData) {
+    // Let the browser set multipart/form-data with its boundary.
+    body = opts.body;
+  } else if (opts.body !== undefined) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(opts.body);
   }
@@ -224,6 +253,63 @@ export const api = {
 
   // stats
   stats: () => request<Stats>("/stats"),
+
+  // --- business workflows (docs/contracts-business.md) ----------------------
+  previewPlan: (id: string, operations: PlanOperation[]) =>
+    request<Proposal>(`/workflows/${id}/plan/preview`, { method: "POST", body: { operations } }),
+  applyPlan: (id: string, body: PlanApplyRequest) => request<Workflow>(`/workflows/${id}/plan/apply`, { method: "POST", body }),
+  detachWorkflow: (id: string) => request<Workflow>(`/workflows/${id}/detach`, { method: "POST" }),
+  simulateWorkflow: (id: string, body: SimulateRequest) => request<Run>(`/workflows/${id}/simulate`, { method: "POST", body }),
+  enableWorkflow: (id: string, body: EnableRequest) => request<Workflow>(`/workflows/${id}/enable`, { method: "POST", body }),
+  disableWorkflow: (id: string) => request<Workflow>(`/workflows/${id}/disable`, { method: "POST" }),
+
+  // designer
+  designerStatus: () => request<DesignerStatus>("/designer/status"),
+  createSession: (body: { prompt?: string; department: string; workflow_id?: string }) =>
+    request<DesignerSession>("/designer/sessions", { method: "POST", body }),
+  getSession: (id: string) => request<DesignerSession>(`/designer/sessions/${id}`),
+  sendSessionMessage: (id: string, message: string) =>
+    request<DesignerSession>(`/designer/sessions/${id}/messages`, { method: "POST", body: { message } }),
+  acceptProposal: (id: string) => request<DesignerSession>(`/designer/sessions/${id}/accept`, { method: "POST" }),
+  discardProposal: (id: string) => request<DesignerSession>(`/designer/sessions/${id}/discard`, { method: "POST" }),
+  undoSession: (id: string) => request<DesignerSession>(`/designer/sessions/${id}/undo`, { method: "POST" }),
+  redoSession: (id: string) => request<DesignerSession>(`/designer/sessions/${id}/redo`, { method: "POST" }),
+  saveSession: (id: string, name?: string) =>
+    request<Workflow>(`/designer/sessions/${id}/save`, { method: "POST", body: name ? { name } : {} }),
+
+  // templates
+  listTemplates: (department?: string) => request<WorkflowTemplate[]>("/templates", { query: { department } }),
+  useTemplate: (id: string, body: { name?: string; department?: string } = {}) =>
+    request<Workflow>(`/templates/${id}/use`, { method: "POST", body }),
+
+  // registry
+  listCapabilities: (department?: string) => request<Capability[]>("/capabilities", { query: { department } }),
+
+  // organization
+  listDepartments: () => request<Department[]>("/departments"),
+  listUsers: () => request<User[]>("/users"),
+  createUser: (body: UserCreate) => request<User>("/users", { method: "POST", body }),
+  updateUser: (id: string, body: UserUpdate) => request<User>(`/users/${id}`, { method: "PUT", body }),
+
+  // connectors / connections
+  listConnectors: () => request<ConnectorType[]>("/connectors"),
+  listConnections: () => request<Connection[]>("/connections"),
+  createConnection: (body: ConnectionIn) => request<Connection>("/connections", { method: "POST", body }),
+  updateConnection: (id: string, body: ConnectionIn) => request<Connection>(`/connections/${id}`, { method: "PUT", body }),
+  deleteConnection: (id: string) => request<void>(`/connections/${id}`, { method: "DELETE" }),
+  testConnection: (id: string) => request<ConnectionTestResult>(`/connections/${id}/test`, { method: "POST" }),
+
+  // files
+  uploadFile: (file: File, department?: string | null) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (department) form.append("department", department);
+    return request<UploadedFile>("/files", { method: "POST", body: form });
+  },
+
+  // inbox
+  listInbox: () => request<InboxItem[]>("/inbox"),
+  markInboxDone: (id: string) => request<InboxItem>(`/inbox/${id}/done`, { method: "POST" }),
 };
 
 export const queryKeys = {
@@ -242,4 +328,13 @@ export const queryKeys = {
   approvals: (status?: string) => ["approvals", status ?? "all"] as const,
   approvalsAll: ["approvals"] as const,
   stats: ["stats"] as const,
+  departments: ["departments"] as const,
+  capabilities: (department?: string | null) => ["capabilities", department ?? "all"] as const,
+  designerStatus: ["designer-status"] as const,
+  session: (id: string) => ["designer-session", id] as const,
+  templates: (department?: string) => ["templates", department ?? "all"] as const,
+  connectors: ["connectors"] as const,
+  connections: ["connections"] as const,
+  users: ["users"] as const,
+  inbox: ["inbox"] as const,
 };

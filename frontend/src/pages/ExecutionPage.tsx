@@ -14,9 +14,14 @@ import {
   type NodeChange,
   type NodeMouseHandler,
 } from "@xyflow/react";
-import { ArrowLeft, Ban, Check, Pause, Pencil, Play, RotateCcw, ShieldAlert, Wifi, WifiOff, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, FlaskConical, Pause, Pencil, Play, RotateCcw, ShieldAlert, Wifi, WifiOff, X } from "lucide-react";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { SeparationOfDutiesBadge } from "@/components/business/Pills";
+import { useUiStore } from "@/stores/ui";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -92,7 +97,14 @@ function ApprovalBanner({ runId }: { runId: string }) {
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium">{a.title}</p>
             {a.description && <p className="text-xs text-muted-foreground">{a.description}</p>}
-            <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">node {a.node_id}</p>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {a.separation_of_duties && <SeparationOfDutiesBadge />}
+              {a.can_decide === false && (
+                <span className="text-[11px] text-muted-foreground" data-testid="cannot-decide">
+                  {a.reason_cannot_decide || "You can't decide this approval."}
+                </span>
+              )}
+            </div>
           </div>
           <Textarea
             aria-label="Approval comment"
@@ -103,10 +115,10 @@ function ApprovalBanner({ runId }: { runId: string }) {
             onChange={(e) => setComment(e.target.value)}
           />
           <div className="flex gap-1.5">
-            <Button size="sm" variant="success" disabled={decide.isPending} onClick={() => decide.mutate({ id: a.id, decision: "approve" })}>
+            <Button size="sm" variant="success" disabled={decide.isPending || a.can_decide === false} onClick={() => decide.mutate({ id: a.id, decision: "approve" })}>
               <Check /> Approve
             </Button>
-            <Button size="sm" variant="destructive" disabled={decide.isPending} onClick={() => decide.mutate({ id: a.id, decision: "reject" })}>
+            <Button size="sm" variant="destructive" disabled={decide.isPending || a.can_decide === false} onClick={() => decide.mutate({ id: a.id, decision: "reject" })}>
               <X /> Reject
             </Button>
           </div>
@@ -120,6 +132,8 @@ function ExecutionInner({ runId }: { runId: string }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const theme = useThemeStore((s) => s.theme);
+  const advanced = useUiStore((s) => s.advancedMode);
+  const setAdvanced = useUiStore((s) => s.setAdvancedMode);
   const [selected, setSelected] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [progress, setProgress] = useState<Record<string, string>>({});
@@ -282,6 +296,7 @@ function ExecutionInner({ runId }: { runId: string }) {
   }
 
   const selectedNode = selected ? run.definition.nodes.find((n) => n.id === selected) : undefined;
+  const simulation = run.mode === "simulation";
   const elapsed = durationBetween(run.started_at, run.finished_at, now);
 
   return (
@@ -299,13 +314,24 @@ function ExecutionInner({ runId }: { runId: string }) {
           <p className="font-mono text-[10px] text-muted-foreground">{run.id}</p>
         </div>
         <StatusBadge status={run.status} />
+        {simulation && (
+          <Badge variant="outline" className="border-violet-500/50 text-violet-700 dark:text-violet-300">
+            <FlaskConical aria-hidden /> Simulation
+          </Badge>
+        )}
         <span className="text-[11px] text-muted-foreground tabular-nums">
           {formatDuration(elapsed)} · {run.steps} steps
         </span>
         <ConnectionIndicator status={wsStatus} terminal={terminal} />
         <div className="ml-auto flex items-center gap-1.5">
+          <div className="mr-1 flex items-center gap-1.5">
+            <Switch id="exec-advanced-toggle" checked={advanced} onCheckedChange={setAdvanced} aria-label="Advanced mode" />
+            <Label htmlFor="exec-advanced-toggle" className="hidden cursor-pointer text-xs text-muted-foreground sm:inline">
+              Advanced
+            </Label>
+          </div>
           <Button variant="ghost" size="sm" asChild>
-            <Link to={`/workflows/${run.workflow_id}/edit`}>
+            <Link to={`/workflows/${run.workflow_id}`}>
               <Pencil /> <span className="hidden sm:inline">Edit workflow</span>
             </Link>
           </Button>
@@ -332,7 +358,23 @@ function ExecutionInner({ runId }: { runId: string }) {
         </div>
       </header>
 
-      {run.status === "WAITING_APPROVAL" && <ApprovalBanner runId={run.id} />}
+      {simulation && (
+        <div
+          role="status"
+          className="flex items-start gap-2 border-b border-violet-500/40 bg-violet-500/10 px-4 py-2.5 text-sm text-violet-900 dark:text-violet-100"
+          data-testid="simulation-banner"
+        >
+          <FlaskConical className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <div>
+            <p className="font-semibold">Simulation — nothing was sent or changed</p>
+            <p className="text-xs opacity-80">
+              Steps that would send messages or change data returned labelled sample results instead. Approvals were decided
+              by your simulation choices. This run does not count as a real execution.
+            </p>
+          </div>
+        </div>
+      )}
+      {run.status === "WAITING_APPROVAL" && !simulation && <ApprovalBanner runId={run.id} />}
       {run.error && (
         <div role="alert" className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive">
           {run.error}
@@ -376,7 +418,8 @@ function ExecutionInner({ runId }: { runId: string }) {
             <NodeRunPanel
               nodeId={selectedNode.id}
               nodeType={selectedNode.type}
-              label={selectedNode.data.label}
+              label={(!advanced && selectedNode.data.business?.title) || selectedNode.data.label}
+              business={advanced ? undefined : selectedNode.data.business}
               runs={runsByNode.get(selectedNode.id) ?? []}
               onClose={() => setSelected(null)}
             />

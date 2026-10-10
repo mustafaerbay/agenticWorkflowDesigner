@@ -11,6 +11,7 @@ import { create } from "zustand";
 import type {
   AnyNodeConfig,
   ConditionNodeConfig,
+  DefinitionMeta,
   Issue,
   NodeType,
   ValidationResult,
@@ -57,6 +58,9 @@ export interface EditorState {
   name: string;
   description: string;
   version: number | null;
+  /** Plan-based workflows: the definition's compiler metadata (round-tripped on save). */
+  meta: DefinitionMeta | null;
+  hasPlan: boolean;
   nodes: FlowNode[];
   edges: FlowEdge[];
   settings: WorkflowSettings;
@@ -69,7 +73,9 @@ export interface EditorState {
   invalidNodes: Record<string, string[]>;
   invalidEdges: Record<string, string[]>;
 
-  load: (wf: Pick<Workflow, "id" | "name" | "description" | "version" | "definition">) => void;
+  load: (wf: Pick<Workflow, "id" | "name" | "description" | "version" | "definition"> & Partial<Pick<Workflow, "has_plan">>) => void;
+  /** Highlight nodes/edges with messages (e.g. unsupported edits) without a ValidationResult. */
+  setHighlights: (nodes: Record<string, string[]>, edges?: Record<string, string[]>) => void;
   reset: () => void;
   markSaved: (wf: Pick<Workflow, "version" | "name" | "description">) => void;
   setName: (name: string) => void;
@@ -127,6 +133,8 @@ const initial = {
   name: "",
   description: "",
   version: null as number | null,
+  meta: null as DefinitionMeta | null,
+  hasPlan: false,
   nodes: [] as FlowNode[],
   edges: [] as FlowEdge[],
   settings: { ...DEFAULT_SETTINGS },
@@ -173,11 +181,14 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         name: wf.name,
         description: wf.description ?? "",
         version: wf.version,
+        meta: wf.definition?.meta ?? null,
+        hasPlan: !!wf.has_plan,
         nodes,
         edges,
         settings,
       });
     },
+    setHighlights: (invalidNodes, invalidEdges = {}) => set({ invalidNodes, invalidEdges }),
     reset: () => set({ ...initial }),
     markSaved: (wf) => set({ dirty: false, version: wf.version, name: wf.name, description: wf.description ?? "" }),
     setName: (name) => set({ name, dirty: true }),
@@ -453,7 +464,7 @@ export const useEditorStore = create<EditorState>()((set, get) => {
 
     getDefinition: () => {
       const s = get();
-      return flowToDefinition(s.nodes, s.edges, s.settings);
+      return flowToDefinition(s.nodes, s.edges, s.settings, s.meta);
     },
   };
 });

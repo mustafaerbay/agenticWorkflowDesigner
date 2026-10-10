@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { Activity, ArrowRight, CheckCircle2, History, ShieldAlert, Workflow, XCircle, type LucideIcon } from "lucide-react";
+import { Activity, ArrowRight, CheckCircle2, History, LayoutTemplate, ShieldAlert, Sparkles, Workflow, XCircle, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -62,13 +62,45 @@ export default function DashboardPage() {
         title="Dashboard"
         description="Overview of your workflows and executions."
         actions={
-          <Button asChild size="sm">
-            <Link to="/workflows">
-              <Workflow /> Workflows
-            </Link>
-          </Button>
+          <>
+            <Button asChild size="sm" variant="outline">
+              <Link to="/workflows">
+                <Workflow /> Workflows
+              </Link>
+            </Button>
+            <Button asChild size="sm">
+              <Link to="/builder">
+                <Sparkles /> Create with AI
+              </Link>
+            </Button>
+          </>
         }
       />
+      <Card className="border-primary/30 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent">
+        <CardContent className="flex flex-wrap items-center gap-4 p-5">
+          <div className="flex size-10 items-center justify-center rounded-lg bg-primary/15 text-primary">
+            <Sparkles className="size-5" aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">Automate a task by describing it</p>
+            <p className="text-xs text-muted-foreground">
+              Tell the assistant what should happen — who approves, who gets notified — and get a workflow you can test safely before turning it on.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/templates">
+                <LayoutTemplate /> Browse templates
+              </Link>
+            </Button>
+            <Button size="sm" asChild>
+              <Link to="/builder">
+                <Sparkles /> Create with AI
+              </Link>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard label="Workflows" value={s?.workflows} icon={Workflow} tone="bg-primary/10 text-primary" to="/workflows" />
         <StatCard label="Total runs" value={s?.runs_total} icon={History} tone="bg-secondary text-secondary-foreground" to="/executions" />

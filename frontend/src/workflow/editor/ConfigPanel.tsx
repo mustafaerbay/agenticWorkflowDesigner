@@ -21,7 +21,9 @@ import type {
   StartNodeConfig,
   ToolNodeConfig,
 } from "@/types";
+import { BusinessNodeDetails } from "@/components/business/BusinessNodeDetails";
 import { NODE_META } from "../nodeMeta";
+import { useNodeDisplayMode } from "../nodes/displayMode";
 import type { FlowNode } from "../types";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { ConditionBuilder } from "./ConditionBuilder";
@@ -326,6 +328,7 @@ export function ConfigPanel() {
   const updateNodeData = useEditorStore((s) => s.updateNodeData);
   const updateEdgeLabel = useEditorStore((s) => s.updateEdgeLabel);
   const deleteElements = useEditorStore((s) => s.deleteElements);
+  const displayMode = useNodeDisplayMode();
 
   const suggestions = useMemo(
     () => buildRefSuggestions(useEditorStore.getState().nodes, singleId),
@@ -381,21 +384,8 @@ export function ConfigPanel() {
   const Icon = meta.icon;
   const errs = invalidNodes[node.id];
 
-  return (
-    <div className="space-y-5 p-4" aria-label={`${meta.title} configuration`}>
-      <div className="flex items-start gap-2.5">
-        <div className={`flex size-8 shrink-0 items-center justify-center rounded-md ${meta.accent}`}>
-          <Icon className="size-4" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold">{meta.title}</h3>
-          <p className="text-[11px] text-muted-foreground">{meta.description}</p>
-        </div>
-        <Button variant="ghost" size="icon-sm" aria-label="Delete node" onClick={() => deleteElements([node.id], [])}>
-          <Trash2 />
-        </Button>
-      </div>
-      {errs && <IssueList messages={errs} />}
+  const technical = (
+    <>
       <div className="space-y-3">
         <Field label={node.type === "agent" ? "Name" : "Label"}>
           {(id) => <Input id={id} value={node.data.label} onChange={(e) => updateNodeData(node.id, { label: e.target.value })} />}
@@ -417,6 +407,44 @@ export function ConfigPanel() {
       <div className="border-t pt-4">
         <NodeConfigBody node={node} suggestions={suggestions} />
       </div>
+    </>
+  );
+
+  if (displayMode === "business") {
+    return (
+      <div className="space-y-4 p-4" aria-label={`${meta.title} configuration`}>
+        {errs && <IssueList messages={errs} />}
+        <BusinessNodeDetails
+          key={node.id}
+          type={node.type}
+          data={node.data}
+          technical={technical}
+          // Hand-built steps have no business description: their settings are what matters.
+          technicalOpenByDefault={!node.data.business}
+        />
+        <Button variant="outline" size="sm" className="text-destructive" onClick={() => deleteElements([node.id], [])}>
+          <Trash2 /> Remove step
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5 p-4" aria-label={`${meta.title} configuration`}>
+      <div className="flex items-start gap-2.5">
+        <div className={`flex size-8 shrink-0 items-center justify-center rounded-md ${meta.accent}`}>
+          <Icon className="size-4" aria-hidden />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">{meta.title}</h3>
+          <p className="text-[11px] text-muted-foreground">{meta.description}</p>
+        </div>
+        <Button variant="ghost" size="icon-sm" aria-label="Delete node" onClick={() => deleteElements([node.id], [])}>
+          <Trash2 />
+        </Button>
+      </div>
+      {errs && <IssueList messages={errs} />}
+      {technical}
     </div>
   );
 }

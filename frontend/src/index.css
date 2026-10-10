@@ -187,6 +187,11 @@
   width: 12px;
   height: 12px;
 }
+.react-flow__handle.handle-error {
+  width: 8px;
+  height: 8px;
+  border-color: color-mix(in oklch, var(--destructive) 70%, transparent);
+}
 .react-flow__node {
   border-radius: var(--radius);
 }

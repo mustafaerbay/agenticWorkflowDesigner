@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { History, RefreshCw, Search } from "lucide-react";
+import { FlaskConical, History, RefreshCw, Search } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -122,7 +123,14 @@ export default function ExecutionsPage() {
                     {r.error && <p className="truncate text-[11px] text-destructive" title={r.error}>{r.error}</p>}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={r.status} />
+                    <div className="flex flex-wrap items-center gap-1">
+                      <StatusBadge status={r.status} />
+                      {r.mode === "simulation" && (
+                        <Badge variant="outline" className="border-violet-500/50 text-violet-700 dark:text-violet-300">
+                          <FlaskConical aria-hidden /> Simulation
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="tabular-nums text-muted-foreground">{r.steps}</TableCell>
                   <TableCell className="tabular-nums text-muted-foreground">{formatDuration(durationBetween(r.started_at, r.finished_at))}</TableCell>

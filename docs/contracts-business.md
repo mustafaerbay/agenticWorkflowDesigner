@@ -40,7 +40,7 @@ type Explanation = {
            status?: CapabilityStatus; side_effect?; retry?; rules?: string[]; requires_action?; on_reject?;
            separation_of_duties?; note?; then?: string|null }[];
   integrations: { connector; label; status: CapabilityStatus; steps: string[] }[];
-  permissions: { step; capability; side_effect; needs_authorization: boolean }[];
+  permissions: { step; step_id; capability; side_effect; needs_authorization: boolean }[];
   approvals: { title; policy_inserted; separation_of_duties }[];
   outcomes: string[]; findings: Finding[]; ready_to_enable: boolean
 }

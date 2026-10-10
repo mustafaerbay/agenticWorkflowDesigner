@@ -1,5 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
-import type { AnyNodeConfig, NodeRun, NodeRunStatus, NodeType } from "@/types";
+import type { AnyNodeConfig, BusinessNodeInfo, NodeRun, NodeRunStatus, NodeType } from "@/types";
 
 /** Runtime overlay shown on nodes in execution-monitoring mode. */
 export interface NodeRuntime {
@@ -14,12 +14,16 @@ export interface NodeRuntime {
   error: string | null;
   agentKind: "llm" | "scripted" | null;
   model: string | null;
+  /** Simulation runs: the output was a labelled sample, nothing was sent or changed. */
+  simulated?: boolean;
+  simulationNote?: string | null;
 }
 
 export interface FlowNodeData extends Record<string, unknown> {
   label: string;
   config: AnyNodeConfig;
   description?: string;
+  business?: BusinessNodeInfo;
   runtime?: NodeRuntime;
 }
 

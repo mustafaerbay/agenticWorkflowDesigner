@@ -36,7 +36,17 @@ export function buildRuntime(runs: NodeRun[] | undefined, progress: string | und
     error: latest?.error ?? null,
     agentKind: latest?.agent_kind ?? null,
     model: latest?.model ?? null,
+    ...simulationInfo(latest?.output),
   };
+}
+
+/** Simulated node outputs carry `_simulated: true` and `_simulation_note`. */
+export function simulationInfo(output: unknown): { simulated: boolean; simulationNote: string | null } {
+  if (output && typeof output === "object" && !Array.isArray(output) && (output as Record<string, unknown>)._simulated === true) {
+    const note = (output as Record<string, unknown>)._simulation_note;
+    return { simulated: true, simulationNote: typeof note === "string" ? note : null };
+  }
+  return { simulated: false, simulationNote: null };
 }
 
 /** Did this edge fire, based on persisted node runs (server is the source of truth)? */

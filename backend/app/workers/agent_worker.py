@@ -66,6 +66,9 @@ class AgentWorker:
         cancelled = asyncio.Event()
         try:
             result, error, retryable = await self._execute(task, node_run, run, cancelled)
+        except Exception as exc:  # never leave a claimed task RUNNING because of an unexpected bug
+            log.exception("task setup crashed", extra={"task_id": task.task_id})
+            result, error, retryable = None, f"Internal error: {type(exc).__name__}: {exc}", True
         finally:
             heartbeat.cancel()
         return await self._finish(task, result, error, retryable)
@@ -357,69 +360,6 @@ class AgentWorker:
         return "\n".join(lines)
 
 
-async def main() -> None:
-    settings = get_settings()
-    configure_logging("agentic-worker", settings.log_level)
-    import aio_pika
-
-    bus = RabbitRedisBus()
-    worker = AgentWorker(bus)
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stop.set)
-    health = Path("/tmp/worker-healthy")
-
-    while True:
-        try:
-            await bus.connect()
-            break
-        except Exception as exc:
-            log.warning("waiting for RabbitMQ", extra={"error": str(exc)})
-            await asyncio.sleep(3)
-    connection = await aio_pika.connect_robust(settings.rabbitmq_url)
-    channel = await connection.channel()
-    await channel.set_qos(prefetch_count=settings.worker_concurrency)
-    queue = await channel.declare_queue(settings.agent_task_queue, durable=True)
-    in_flight: set[asyncio.Task[None]] = set()
-
-    async def handle(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-        try:
-            payload = json.loads(message.body)
-            outcome = await worker.process(payload)
-            log.info("task processed", extra={"task_id": payload.get("task_id"), "outcome": outcome})
-            await message.ack()
-        except Exception:
-            log.exception("task handling failed; requeueing")
-            await asyncio.sleep(2)
-            await message.nack(requeue=True)
-
-    async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-        task = asyncio.create_task(handle(message))
-        in_flight.add(task)
-        task.add_done_callback(in_flight.discard)
-
-    tag = await queue.consume(on_message)
-    log.info("agent worker started", extra={"worker_id": worker.worker_id})
-    while not stop.is_set():
-        health.write_text(now().isoformat())
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=5)
-        except TimeoutError:
-            pass
-    log.info("shutting down: draining in-flight tasks", extra={"in_flight": len(in_flight)})
-    await queue.cancel(tag)
-    if in_flight:
-        await asyncio.wait(in_flight, timeout=30)
-    await connection.close()
-    await bus.close()
-    await dispose_engine()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
 class WorkerServices:
     """Runtime services for tools. Every check here is enforced independently of the workflow
     definition: file access, recipients and connections are resolved for the run's department."""
@@ -521,3 +461,67 @@ class WorkerServices:
         except SecretStoreError as exc:
             raise ToolError(str(exc), retryable=False) from exc
         return connection, secret
+
+
+async def main() -> None:
+    settings = get_settings()
+    configure_logging("agentic-worker", settings.log_level)
+    import aio_pika
+
+    bus = RabbitRedisBus()
+    worker = AgentWorker(bus)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    health = Path("/tmp/worker-healthy")
+
+    while True:
+        try:
+            await bus.connect()
+            break
+        except Exception as exc:
+            log.warning("waiting for RabbitMQ", extra={"error": str(exc)})
+            await asyncio.sleep(3)
+    connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+    channel = await connection.channel()
+    await channel.set_qos(prefetch_count=settings.worker_concurrency)
+    queue = await channel.declare_queue(settings.agent_task_queue, durable=True)
+    in_flight: set[asyncio.Task[None]] = set()
+
+    async def handle(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+        try:
+            payload = json.loads(message.body)
+            outcome = await worker.process(payload)
+            log.info("task processed", extra={"task_id": payload.get("task_id"), "outcome": outcome})
+            await message.ack()
+        except Exception:
+            log.exception("task handling failed; requeueing")
+            await asyncio.sleep(2)
+            await message.nack(requeue=True)
+
+    async def on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+        task = asyncio.create_task(handle(message))
+        in_flight.add(task)
+        task.add_done_callback(in_flight.discard)
+
+    tag = await queue.consume(on_message)
+    log.info("agent worker started", extra={"worker_id": worker.worker_id})
+    while not stop.is_set():
+        health.write_text(now().isoformat())
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=5)
+        except TimeoutError:
+            pass
+    log.info("shutting down: draining in-flight tasks", extra={"in_flight": len(in_flight)})
+    await queue.cancel(tag)
+    if in_flight:
+        await asyncio.wait(in_flight, timeout=30)
+    await connection.close()
+    await bus.close()
+    await dispose_engine()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+

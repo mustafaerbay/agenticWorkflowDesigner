@@ -1,5 +1,7 @@
 import type {
   AnyNodeConfig,
+  BusinessNodeInfo,
+  DefinitionMeta,
   NodeType,
   WorkflowDefinition,
   WorkflowEdge,
@@ -36,6 +38,7 @@ export function definitionToFlow(def: WorkflowDefinition | null | undefined): {
       },
     };
     if (n.data?.description) node.data.description = n.data.description;
+    if (n.data?.business) node.data.business = cloneJson(n.data.business) as BusinessNodeInfo;
     if (n.type === "start") node.deletable = true;
     return node;
   });
@@ -60,6 +63,7 @@ export function flowToDefinition(
   nodes: readonly FlowNode[],
   edges: readonly FlowEdge[],
   settings: WorkflowSettings,
+  meta?: DefinitionMeta | null,
 ): WorkflowDefinition {
   const outNodes: WorkflowNode[] = nodes.map((n) => {
     const data: WorkflowNode["data"] = {
@@ -67,6 +71,7 @@ export function flowToDefinition(
       config: cloneJson(n.data.config ?? {}) as AnyNodeConfig,
     };
     if (n.data.description) data.description = n.data.description;
+    if (n.data.business) data.business = cloneJson(n.data.business);
     return {
       id: n.id,
       type: n.type as NodeType,
@@ -86,7 +91,7 @@ export function flowToDefinition(
     if (typeof label === "string" && label.trim()) edge.label = label;
     return edge;
   });
-  return {
+  const out: WorkflowDefinition = {
     nodes: outNodes,
     edges: outEdges,
     settings: {
@@ -95,6 +100,9 @@ export function flowToDefinition(
       max_duration_seconds: settings.max_duration_seconds,
     },
   };
+  // Compiler metadata is carried through untouched so the backend can translate graph edits.
+  if (meta) out.meta = cloneJson(meta);
+  return out;
 }
 
 export function emptyDefinition(): WorkflowDefinition {

@@ -1,4 +1,18 @@
 // Types mirroring docs/contracts.md exactly. Keep in sync with the backend.
+// Business-workflow additions (docs/contracts-business.md) live in ./business.
+
+import type {
+  BusinessNodeInfo,
+  BusinessPlan,
+  DefinitionMeta,
+  Explanation,
+  GlobalRole,
+  Membership,
+  PlanMeta,
+  WorkflowStatus,
+} from "./business";
+
+export * from "./business";
 
 export type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
 export type JSONObject = { [key: string]: JSONValue };
@@ -138,6 +152,8 @@ export interface WorkflowNodeData {
   label: string;
   config: AnyNodeConfig;
   description?: string;
+  /** Business-language description (compiled plan-based workflows). */
+  business?: BusinessNodeInfo;
 }
 
 export interface WorkflowNode {
@@ -166,6 +182,8 @@ export interface WorkflowDefinition {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   settings: WorkflowSettings;
+  /** Compiler metadata (plan-based workflows). */
+  meta?: DefinitionMeta;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +194,9 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: "admin" | "editor" | "viewer";
+  role: GlobalRole;
+  memberships?: Membership[];
+  is_active?: boolean;
 }
 
 export interface LoginResponse {
@@ -195,10 +215,21 @@ export interface WorkflowSummary {
   node_count: number;
   last_run_status: string | null;
   is_example: boolean;
+  // business additions (optional so legacy payloads still type-check)
+  department?: string | null;
+  status?: WorkflowStatus;
+  enabled_version?: number | null;
+  has_plan?: boolean;
+  plan_meta?: PlanMeta | null;
+  /** Not in the contract: permissions of the current user, when the backend provides them. */
+  can_edit?: boolean | null;
+  can_enable?: boolean | null;
 }
 
 export interface Workflow extends WorkflowSummary {
   definition: WorkflowDefinition;
+  plan?: BusinessPlan | null;
+  explanation?: Explanation | null;
 }
 
 export interface WorkflowCreate {
@@ -273,6 +304,9 @@ export interface RunSummary {
   finished_at: string | null;
   steps: number;
   error: string | null;
+  mode?: "real" | "simulation";
+  triggered_by?: "manual" | "schedule" | "api";
+  department?: string | null;
 }
 
 export interface NodeRunLog {
@@ -434,6 +468,11 @@ export interface Approval {
   decided_at: string | null;
   decided_by: string | null;
   comment: string | null;
+  department?: string | null;
+  required_role?: string | null;
+  separation_of_duties?: boolean;
+  can_decide?: boolean;
+  reason_cannot_decide?: string | null;
 }
 
 export interface ApprovalDecision {
