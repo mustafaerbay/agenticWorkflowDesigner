@@ -11,6 +11,7 @@ from app.business.graph_edit import graph_to_operations
 from app.business.operations import OperationError, apply_operations, diff_plans, parse_operations
 from app.business.plan import BusinessPlan
 from app.business.policy import PolicyContext, apply_policy
+from app.business.templates import TEMPLATES
 from app.services.execution import get_validator
 
 
@@ -236,3 +237,18 @@ def test_explanation_is_business_language():
     assert "the request's 'amount' is more than 10000" in decision["rules"][0]
     assert explanation["trigger"].startswith("Started manually")
     assert any("Invoice is incomplete" in o for o in explanation["outcomes"])
+
+
+@pytest.mark.parametrize("template_id", [t["id"] for t in TEMPLATES])
+def test_every_template_compiles_without_blocking_errors(template_id):
+    from app.business.service import evaluate
+    from app.business.templates import get_template
+
+    template = get_template(template_id)
+    plan = BusinessPlan.model_validate(template["plan"])
+    ctx = PolicyContext(department=plan.department, connected={"llm", "smtp", "http", "chat"},
+                        departments={"hr", "finance", "operations", "it", "engineering"})
+    evaluation = evaluate(plan, ctx)
+    assert not evaluation.blocking, [f.as_dict() for f in evaluation.blocking]
+    assert evaluation.definition is not None
+    assert evaluation.explanation["ready_to_enable"] is True
