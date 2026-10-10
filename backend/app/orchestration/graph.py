@@ -31,6 +31,8 @@ def source_handles(node: dict[str, Any]) -> list[str]:
         return [*handles, default]
     if ntype == "approval":
         return ["approved", "rejected"]
+    if ntype in ("agent", "tool"):
+        return ["out", "error"]  # "error" is taken only after retries are exhausted
     return ["out"]
 
 

@@ -383,7 +383,7 @@ class Engine:
             self.complete_inline(ctx, nr, {"message": message})
             self.fail_run(ctx, message)
         elif ntype == "delay":
-            seconds = float(config.get("seconds") or 0)
+            seconds = 0.0 if run.mode == "simulation" else float(config.get("seconds") or 0)
             nr.status = "WAITING"
             nr.wait_until = now() + timedelta(seconds=seconds)
             emit(session, run, "node.waiting", node_id=nr.node_id, node_run_id=nr.id,
@@ -392,6 +392,17 @@ class Engine:
             if seconds <= 0:
                 self.complete_inline(ctx, nr, {"waited_seconds": 0})
                 self.route(ctx, nr, "out")
+        elif ntype == "approval" and run.mode == "simulation":
+            # Simulation never waits for people: the outcome comes from the simulation options.
+            decisions = ((run.effective_config or {}).get("__simulation__") or {}).get("approvals") or {}
+            approve = str(decisions.get(nr.node_id, "approve")).lower() != "reject"
+            handle = "approved" if approve else "rejected"
+            nr.logs = [{"ts": now().isoformat(), "level": "info",
+                        "message": f"Simulation: approval assumed {'approved' if approve else 'rejected'}"}]
+            self.complete_inline(ctx, nr, {"approved": approve, "decision": handle, "_simulated": True,
+                                           "_simulation_note": "Approval outcome chosen for the simulation"},
+                                 handle=handle)
+            self.route(ctx, nr, handle)
         elif ntype == "approval":
             nr.status = "WAITING"
             approval = Approval(
@@ -403,6 +414,9 @@ class Engine:
                 description=str(config.get("description") or ""),
                 status="pending",
                 requested_at=now(),
+                department=config.get("department") or run.department,
+                required_role=str(config.get("required_role") or "approver"),
+                separation_of_duties=bool(config.get("separation_of_duties")),
             )
             session.add(approval)
             emit(session, run, "node.waiting", node_id=nr.node_id, node_run_id=nr.id,
@@ -430,7 +444,7 @@ class Engine:
             if nr.attempt < max_attempts:
                 nr.logs = [*(nr.logs or []), {"ts": now().isoformat(), "level": "warning",
                                               "message": "Not retried: this error cannot be fixed by retrying"}]
-            self.fail_run(ctx, f"Node '{nr.label}' failed (not retryable): {nr.error or 'unknown error'}")
+            self._give_up(ctx, nr, f"Node '{nr.label}' failed (not retryable): {nr.error or 'unknown error'}")
             return
         if nr.attempt < max_attempts:
             if ctx.run.steps + 1 > ctx.settings["max_total_steps"]:
@@ -443,7 +457,17 @@ class Engine:
                  data={"status": "PENDING", "message": f"Retry {nr.attempt + 1}/{max_attempts} scheduled",
                        "iteration": nr.iteration, "attempt": nr.attempt + 1})
             return
-        self.fail_run(ctx, f"Node '{nr.label}' failed after {nr.attempt} attempt(s): {nr.error or 'unknown error'}")
+        self._give_up(ctx, nr, f"Node '{nr.label}' failed after {nr.attempt} attempt(s): {nr.error or 'unknown error'}")
+
+    def _give_up(self, ctx: RunContext, nr: NodeRun, message: str) -> None:
+        """Follow the node's "error" connection if it has one, otherwise fail the run."""
+        if ctx.graph.edges_from_handle(nr.node_id, "error"):
+            nr.logs = [*(nr.logs or []), {"ts": now().isoformat(), "level": "warning",
+                                          "message": "Continuing on the failure path"}]
+            nr.selected_handle = "error"
+            self.route(ctx, nr, "error")
+            return
+        self.fail_run(ctx, message)
 
     # -- run-level state ---------------------------------------------------------
 

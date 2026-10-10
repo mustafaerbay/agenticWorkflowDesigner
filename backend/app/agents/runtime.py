@@ -48,7 +48,7 @@ class LLMAgent(BaseAgent):
                                                "parameters": TOOLS[n].parameters}}
             for n in context.allowed_tools if n in TOOLS
         ]
-        system = "\n\n".join(filter(None, [config.get("system_prompt"), UNTRUSTED_NOTICE]))
+        system = "\n\n".join(filter(None, [config.get("system_prompt"), config.get("instructions"), UNTRUSTED_NOTICE]))
         if schema:
             system += "\n\nWhen you are finished, reply with ONLY a JSON object matching this schema:\n" + json.dumps(schema)
         user = context.prompt or "Complete your task."

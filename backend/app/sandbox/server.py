@@ -224,6 +224,140 @@ async def import_archive(request: Request, workspace: str, path: str, label: str
     return {"path": path, "files": files}
 
 
+# -- uploaded documents and data (read-only mount at UPLOADS_DIR) -----------------------------
+
+MAX_DOC_BYTES = 25 * 1024 * 1024
+
+
+class FileRequest(BaseModel):
+    file_id: str
+    max_chars: int = Field(default=100_000, ge=1, le=1_000_000)
+
+
+class FieldsRequest(BaseModel):
+    file_id: str
+    fields: list[str] = Field(min_length=1, max_length=100)
+
+
+class ReconcileRequest(BaseModel):
+    file_id: str
+    amount_column: str = Field(min_length=1, max_length=200)
+    expected_total: float
+    tolerance: float = Field(default=0.01, ge=0)
+
+
+def upload_path(file_id: str) -> Path:
+    try:
+        uuid.UUID(file_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="file id must be a UUID") from exc
+    path = Path(settings.uploads_dir) / file_id
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    if path.stat().st_size > MAX_DOC_BYTES:
+        raise HTTPException(status_code=413, detail="file too large")
+    return path
+
+
+def _extract(path: Path, max_chars: int) -> dict[str, Any]:
+    raw = path.read_bytes()
+    if raw[:5] == b"%PDF-":
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        pages = [page.extract_text() or "" for page in reader.pages[:500]]
+        text = "\n\n".join(pages)
+        page_count = len(reader.pages)
+    else:
+        if b"\x00" in raw[:4096]:
+            raise HTTPException(status_code=415, detail="unsupported binary file (use PDF, text, Markdown or CSV)")
+        text = raw.decode("utf-8", errors="replace")
+        page_count = 1
+    return {"text": text[:max_chars], "pages": page_count, "chars": len(text), "truncated": len(text) > max_chars}
+
+
+async def _extract_async(path: Path, max_chars: int) -> dict[str, Any]:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_extract, path, max_chars), timeout=60)
+    except TimeoutError as exc:
+        raise HTTPException(status_code=422, detail="document could not be read within 60 seconds") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # malformed documents
+        raise HTTPException(status_code=422, detail=f"document could not be read: {type(exc).__name__}") from exc
+
+
+def _read_table(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    import csv
+
+    text = path.read_bytes()[:MAX_DOC_BYTES].decode("utf-8-sig", errors="replace")
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    rows = [row for _, row in zip(range(200_000), reader, strict=False)]
+    return [c for c in (reader.fieldnames or []) if c], rows
+
+
+def _number(value: Any) -> float | None:
+    if value is None:
+        return None
+    cleaned = re.sub(r"[^0-9,.\-]", "", str(value))
+    if cleaned.count(",") and cleaned.count("."):
+        cleaned = cleaned.replace(",", "") if cleaned.rfind(".") > cleaned.rfind(",") else cleaned.replace(".", "").replace(",", ".")
+    elif cleaned.count(","):
+        cleaned = cleaned.replace(",", ".") if len(cleaned.split(",")[-1]) != 3 else cleaned.replace(",", "")
+    try:
+        return float(cleaned) if cleaned not in ("", "-", ".") else None
+    except ValueError:
+        return None
+
+
+@app.post("/docs/extract", dependencies=[Depends(require_token)])
+async def docs_extract(req: FileRequest) -> dict[str, Any]:
+    return await _extract_async(upload_path(req.file_id), req.max_chars)
+
+
+@app.post("/docs/check_fields", dependencies=[Depends(require_token)])
+async def docs_check_fields(req: FieldsRequest) -> dict[str, Any]:
+    doc = await _extract_async(upload_path(req.file_id), 1_000_000)
+    haystack = re.sub(r"\s+", " ", doc["text"]).lower()
+    found, missing = [], []
+    for item in req.fields:
+        needle = re.sub(r"\s+", " ", str(item)).strip().lower()
+        (found if needle and needle in haystack else missing).append(item)
+    return {"all_present": not missing, "missing": missing, "found": found}
+
+
+@app.post("/data/summarize", dependencies=[Depends(require_token)])
+async def data_summarize(req: FileRequest) -> dict[str, Any]:
+    columns, rows = await asyncio.to_thread(_read_table, upload_path(req.file_id))
+    totals: dict[str, float] = {}
+    stats: dict[str, dict[str, float]] = {}
+    for column in columns:
+        values = [v for v in (_number(r.get(column)) for r in rows) if v is not None]
+        if values and len(values) >= max(1, len(rows) // 2):
+            totals[column] = round(sum(values), 2)
+            stats[column] = {"min": min(values), "max": max(values), "mean": round(sum(values) / len(values), 4),
+                             "count": len(values)}
+    summary = f"{len(rows)} rows, {len(columns)} columns" + (
+        "; totals: " + ", ".join(f"{k} = {v:,.2f}" for k, v in totals.items()) if totals else "")
+    return {"rows": len(rows), "columns": columns, "totals": totals, "stats": stats, "summary": summary}
+
+
+@app.post("/data/reconcile", dependencies=[Depends(require_token)])
+async def data_reconcile(req: ReconcileRequest) -> dict[str, Any]:
+    columns, rows = await asyncio.to_thread(_read_table, upload_path(req.file_id))
+    match = next((c for c in columns if c.strip().lower() == req.amount_column.strip().lower()), None)
+    if match is None:
+        raise HTTPException(status_code=422, detail=f"column '{req.amount_column}' not found (columns: {columns[:20]})")
+    total = round(sum(v for v in (_number(r.get(match)) for r in rows) if v is not None), 2)
+    difference = round(total - req.expected_total, 2)
+    return {"total": total, "expected_total": req.expected_total, "difference": difference,
+            "within_tolerance": abs(difference) <= req.tolerance, "rows": len(rows)}
+
+
 @app.post("/exec", dependencies=[Depends(require_token)])
 async def exec_command(req: ExecRequest) -> dict[str, Any]:
     check_argv(req.argv)

@@ -41,6 +41,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(200), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="editor")
+    # [{"department": "finance", "roles": ["member", "builder", "approver", "dept_admin"]}]
+    memberships: Mapped[list[Any]] = mapped_column(default=list, server_default="[]", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = created_at()
 
@@ -53,6 +55,14 @@ class Workflow(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     current_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_example: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    department: Mapped[str | None] = mapped_column(String(40), index=True)
+    # Plan-based workflows must be enabled before real runs; legacy workflows are always "enabled".
+    status: Mapped[str] = mapped_column(String(20), default="enabled", server_default="enabled", nullable=False)
+    enabled_version: Mapped[int | None] = mapped_column(Integer)
+    enabled_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    schedule_cron: Mapped[str | None] = mapped_column(String(100))
+    schedule_timezone: Mapped[str | None] = mapped_column(String(64))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = mapped_column(
@@ -69,6 +79,9 @@ class WorkflowVersion(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     definition: Mapped[dict[str, Any]] = mapped_column(nullable=False)
+    # Canonical Business Plan (null for advanced-only workflows); definition is compiled from it.
+    plan: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    change_summary: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = created_at()
 
@@ -110,6 +123,8 @@ class Agent(Base):
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     kind: Mapped[str] = mapped_column(String(20), default="llm", nullable=False)
     preset: Mapped[str | None] = mapped_column(String(40))
+    # Registry metadata: capabilities, departments, business description, schemas, constraints...
+    profile: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}", nullable=False)
     current_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     owner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -164,6 +179,9 @@ class WorkflowRun(Base):
     workflow_version: Mapped[int] = mapped_column(Integer, nullable=False)
     workflow_name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(20), default="real", server_default="real", nullable=False)
+    triggered_by: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual", nullable=False)
+    department: Mapped[str | None] = mapped_column(String(40))
     input: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
     output: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)
@@ -252,6 +270,9 @@ class Approval(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     comment: Mapped[str | None] = mapped_column(Text)
+    department: Mapped[str | None] = mapped_column(String(40))
+    required_role: Mapped[str] = mapped_column(String(20), default="approver", server_default="approver", nullable=False)
+    separation_of_duties: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
 
 
 class AgentArtifact(Base):
@@ -277,4 +298,83 @@ class AuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(50), nullable=False)
     entity_id: Mapped[str | None] = mapped_column(String(100))
     data: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
+    created_at: Mapped[datetime] = created_at()
+
+
+class Department(Base):
+    __tablename__ = "departments"
+    code: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    sensitive: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class Connection(Base):
+    """An admin-configured connector instance. Secrets are encrypted and never returned."""
+
+    __tablename__ = "connections"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    connector: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # smtp | http | slack | teams
+    config: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
+    secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    departments: Mapped[list[Any]] = mapped_column(default=list, nullable=False)  # [] = all departments
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_test_ok: Mapped[bool | None] = mapped_column(Boolean)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = created_at()
+
+
+class UploadedFile(Base):
+    __tablename__ = "files"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(200), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    department: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = created_at()
+
+
+class InboxItem(Base):
+    """In-app notification or task for a user."""
+
+    __tablename__ = "inbox_items"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # notification | task
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("workflow_runs.id", ondelete="SET NULL"))
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_at()
+
+
+class DesignerSession(Base):
+    __tablename__ = "designer_sessions"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("workflows.id", ondelete="SET NULL"))
+    base_version: Mapped[int | None] = mapped_column(Integer)
+    department: Mapped[str | None] = mapped_column(String(40))
+    messages: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
+    plan: Mapped[dict[str, Any] | None] = mapped_column(JSONB)          # accepted plan
+    proposal: Mapped[dict[str, Any] | None] = mapped_column(JSONB)      # pending proposal awaiting confirmation
+    undo_stack: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
+    redo_stack: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
+    created_at: Mapped[datetime] = created_at()
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class ScheduleFire(Base):
+    """Idempotency record: one run per workflow per schedule slot."""
+
+    __tablename__ = "schedule_fires"
+    __table_args__ = (UniqueConstraint("workflow_id", "slot"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    workflow_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    slot: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     created_at: Mapped[datetime] = created_at()

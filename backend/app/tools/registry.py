@@ -72,6 +72,8 @@ class ToolContext:
     save_artifact: Callable[[str, str, bytes], Awaitable[dict[str, Any]]] | None = None
     build_report: Callable[[], Awaitable[str]] | None = None
     workspace_ready: bool = False
+    # Worker-provided runtime services: file access checks, inbox, connections (see WorkerServices).
+    services: Any = None
 
     async def ensure_workspace(self) -> None:
         if not self.workspace_ready:
@@ -196,6 +198,72 @@ async def _create_report(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     return {**artifact, "title": title, "preview": content[:2000]}
 
 
+def _services(ctx: ToolContext) -> Any:
+    if ctx.services is None:
+        raise ToolError("this tool needs worker services", retryable=False)
+    return ctx.services
+
+
+async def _file_id(ctx: ToolContext, args: dict[str, Any], key: str = "file") -> str:
+    file_id = str(args.get(key) or "").strip()
+    if not file_id:
+        raise ToolError(f"no file given for '{key}'", retryable=False)
+    await _services(ctx).check_file(file_id)
+    return file_id
+
+
+async def _doc_extract_text(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return await ctx.sandbox.call("/docs/extract", {"file_id": await _file_id(ctx, args),
+                                                    "max_chars": int(args.get("max_chars") or 100_000)})
+
+
+async def _doc_check_fields(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    fields = args.get("fields")
+    if isinstance(fields, str):
+        fields = [f.strip() for f in fields.split(",") if f.strip()]
+    return await ctx.sandbox.call("/docs/check_fields", {"file_id": await _file_id(ctx, args), "fields": fields})
+
+
+async def _data_summarize_csv(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return await ctx.sandbox.call("/data/summarize", {"file_id": await _file_id(ctx, args)})
+
+
+async def _data_reconcile(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return await ctx.sandbox.call("/data/reconcile", {
+        "file_id": await _file_id(ctx, args), "amount_column": args["amount_column"],
+        "expected_total": float(args["expected_total"]), "tolerance": float(args.get("tolerance") or 0.01)})
+
+
+async def _notify_user(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return await _services(ctx).inbox("notification", args["recipient"], args["title"], args["message"])
+
+
+async def _task_create(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return await _services(ctx).inbox("task", args["assignee"], args["title"], args.get("description") or "",
+                                      args.get("due_in_days"))
+
+
+async def _email_send(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.connectors import send_email
+
+    connection, secret = await _services(ctx).connection("smtp")
+    return await send_email(connection.config, secret, args["to"], args["subject"], args["body"])
+
+
+async def _http_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.connectors import http_call
+
+    connection, secret = await _services(ctx).connection("http")
+    return await http_call(connection.config, secret, args.get("method") or "GET", args["path"], args.get("body"))
+
+
+async def _chat_post(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.connectors import post_chat
+
+    connection, secret = await _services(ctx).connection("chat")
+    return await post_chat(connection.connector, secret or "", args["text"])
+
+
 TEST_REPORT_SCHEMA = _obj({
     "tests_passed": {"type": "boolean"},
     "exit_code": {"type": "integer"},
@@ -252,6 +320,46 @@ TOOLS: dict[str, ToolSpec] = {
                  _obj({"success": {"type": "boolean"}, "repo_url": {"type": "string"}, "ref": {"type": ["string", "null"]},
                        "commit": {"type": "string"}, "path": {"type": "string"}, "files": {"type": "integer"},
                        "bytes": {"type": "integer"}})),
+        ToolSpec("doc_extract_text", "Read the text of an uploaded document (PDF, text, Markdown, CSV).",
+                 _obj({"file": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1}}, ["file"]),
+                 _doc_extract_text,
+                 _obj({"text": {"type": "string"}, "pages": {"type": "integer"}, "chars": {"type": "integer"},
+                       "truncated": {"type": "boolean"}})),
+        ToolSpec("doc_check_fields", "Check that an uploaded document mentions each required item.",
+                 _obj({"file": {"type": "string"}, "fields": {"type": ["array", "string"]}}, ["file", "fields"]),
+                 _doc_check_fields,
+                 _obj({"all_present": {"type": "boolean"}, "missing": {"type": "array"}, "found": {"type": "array"}})),
+        ToolSpec("data_summarize_csv", "Summarize an uploaded CSV file: rows, columns and numeric totals.",
+                 _obj({"file": {"type": "string"}}, ["file"]), _data_summarize_csv,
+                 _obj({"rows": {"type": "integer"}, "columns": {"type": "array"}, "totals": {"type": "object"},
+                       "stats": {"type": "object"}, "summary": {"type": "string"}})),
+        ToolSpec("data_reconcile", "Add up a CSV column and compare it with an expected total.",
+                 _obj({"file": {"type": "string"}, "amount_column": {"type": "string"},
+                       "expected_total": {"type": ["number", "string"]}, "tolerance": {"type": ["number", "string"]}},
+                      ["file", "amount_column", "expected_total"]), _data_reconcile,
+                 _obj({"total": {"type": "number"}, "expected_total": {"type": "number"}, "difference": {"type": "number"},
+                       "within_tolerance": {"type": "boolean"}, "rows": {"type": "integer"}})),
+        ToolSpec("notify_user", "Send an in-app notification to a user (email) or role ('approver@finance').",
+                 _obj({"recipient": {"type": "string"}, "title": {"type": "string"}, "message": {"type": "string"}},
+                      ["recipient", "title", "message"]), _notify_user,
+                 _obj({"notification_id": {"type": "string"}, "recipients": {"type": "integer"}})),
+        ToolSpec("task_create", "Create a task in a user's (or role's) in-app inbox.",
+                 _obj({"assignee": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"},
+                       "due_in_days": {"type": ["number", "string"]}}, ["assignee", "title"]), _task_create,
+                 _obj({"task_id": {"type": "string"}, "assignees": {"type": "integer"}})),
+        ToolSpec("email_send", "Send an email through the department's SMTP connection.",
+                 _obj({"to": {"type": ["string", "array"]}, "subject": {"type": "string"}, "body": {"type": "string"}},
+                      ["to", "subject", "body"]), _email_send,
+                 _obj({"sent": {"type": "boolean"}, "message_id": {"type": "string"}, "recipients": {"type": "array"}}),
+                 dangerous=True),
+        ToolSpec("http_request", "Call the department's business-system connection (fixed host, allow-listed paths).",
+                 _obj({"method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                       "path": {"type": "string"}, "body": {}}, ["path"]), _http_request,
+                 _obj({"status": {"type": "integer"}, "ok": {"type": "boolean"}, "data": {"type": "object"}}),
+                 dangerous=True),
+        ToolSpec("chat_post", "Post a message to the department's Slack or Teams channel.",
+                 _obj({"text": {"type": "string"}}, ["text"]), _chat_post, _obj({"posted": {"type": "boolean"}}),
+                 dangerous=True),
         ToolSpec("create_report", "Create a Markdown development report artifact (auto-generated if no content).",
                  _obj({"title": {"type": "string"}, "content": {"type": "string"}, "name": {"type": "string"}}),
                  _create_report, _obj({**ARTIFACT_SCHEMA, "title": {"type": "string"}, "preview": {"type": "string"}})),

@@ -205,8 +205,14 @@ class AgentWorker:
             workspace_template=(run.input or {}).get("workspace_template"),
             save_artifact=lambda name, kind, content: self._save_artifact(run_id, node_run_id, name, kind, content),
             build_report=lambda: self._build_report(run_id),
+            services=WorkerServices(self.sessions, run),
         )
+        simulation = run.mode == "simulation"
         try:
+            if simulation:
+                simulated = await self._simulate(task, node_run, run, config, eval_ctx, tool_ctx, report)
+                if simulated is not None:
+                    return simulated, None, True
             if node_run.node_type == "tool":
                 args = resolve_value(config.get("args") or {}, eval_ctx)
                 await self._set_input(task, {"tool": config.get("tool"), "args": args})
@@ -223,7 +229,8 @@ class AgentWorker:
                     raise
                 finally:
                     await record_tool_call(entry)
-            inputs = {"input": run.input or {}}
+            # Data minimization: business AI steps only see their declared parameters.
+            inputs: dict[str, Any] = {} if config.get("minimize_inputs") else {"input": run.input or {}}
             for key, ref in (config.get("input_mapping") or {}).items():
                 inputs[key] = eval_ctx.resolve(ref)
             prompt = render_template(config.get("user_prompt") or "", eval_ctx)
@@ -250,6 +257,43 @@ class AgentWorker:
         except Exception as exc:  # unexpected bug: record it rather than crash the worker
             log.exception("agent execution crashed", extra={"task_id": task.task_id})
             return None, f"Internal error: {type(exc).__name__}: {exc}", True
+
+    async def _simulate(
+        self, task: AgentTask, node_run: NodeRun, run: WorkflowRun, config: dict[str, Any], eval_ctx: Any,
+        tool_ctx: ToolContext, report: Any,
+    ) -> AgentResult | None:
+        """Simulation mode: never perform side effects. Returns None to execute a step for real
+        (read-only steps), or a labelled simulated result."""
+        from app.business.capabilities import get_capability, tool_side_effects
+
+        options = (run.effective_config or {}).get("__simulation__") or {}
+        override = (options.get("step_outputs") or {}).get(node_run.node_id)
+        capability = get_capability(str(config.get("capability") or ""))
+        sample = dict(capability.sample_output) if capability else {}
+
+        def labelled(output: dict[str, Any], reason: str) -> AgentResult:
+            return AgentResult({**output, "_simulated": True, "_simulation_note": reason})
+
+        if isinstance(override, dict):
+            await report("Simulation: using the sample output you provided")
+            return labelled({**sample, **override}, "Sample output provided for the simulation")
+        if node_run.node_type == "tool":
+            effect = config.get("side_effect") or tool_side_effects().get(str(config.get("tool")), "external_write")
+            if effect != "none":
+                await report(f"Simulation: '{node_run.label}' was not executed ({effect.replace('_', ' ')} side effect)")
+                return labelled(sample, f"Not executed in simulation: this step has a {effect.replace('_', ' ')} "
+                                        "side effect")
+            try:
+                args = resolve_value(config.get("args") or {}, eval_ctx)
+                output, _ = await execute_tool(config.get("tool"), args, tool_ctx, None)
+                return AgentResult({**output, "_simulated": False})
+            except ToolError as exc:
+                await report(f"Simulation: read-only step could not run ({exc}); using a sample result")
+                return labelled(sample, f"Sample result (the real step could not run in simulation: {exc})")
+        if config.get("kind") == "llm" and not (config.get("provider") or {}).get("base_url"):
+            await report("Simulation: no AI model configured; using a sample result")
+            return labelled(sample, "Sample result: no AI model provider is configured")
+        return None
 
     async def _set_input(self, task: AgentTask, value: dict[str, Any]) -> None:
         async with self.sessions() as session:
@@ -374,3 +418,86 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+class WorkerServices:
+    """Runtime services for tools. Every check here is enforced independently of the workflow
+    definition: file access, recipients and connections are resolved for the run's department."""
+
+    def __init__(self, sessions: async_sessionmaker[AsyncSession], run: WorkflowRun) -> None:
+        self.sessions = sessions
+        self.run = run
+
+    async def check_file(self, file_id: str) -> None:
+        from app.models import UploadedFile
+
+        try:
+            fid = uuid.UUID(file_id)
+        except ValueError as exc:
+            raise ToolError(f"'{file_id}' is not a file id", retryable=False) from exc
+        async with self.sessions() as session:
+            f = await session.get(UploadedFile, fid)
+        if f is None:
+            raise ToolError("file not found", retryable=False)
+        same_department = f.department is not None and f.department == self.run.department
+        if not (same_department or f.owner_id == self.run.created_by):
+            raise ToolError("this run is not allowed to read that file", retryable=False)
+
+    async def _resolve_users(self, session: AsyncSession, target: str) -> list[Any]:
+        from app.models import User
+
+        target = str(target).strip()
+        if "@" in target and not target.split("@", 1)[0] in ("member", "builder", "approver", "dept_admin"):
+            user = (await session.execute(select(User).where(User.email == target.lower(), User.is_active.is_(True)))).scalar_one_or_none()
+            if user is None:
+                user = (await session.execute(select(User).where(User.email == target, User.is_active.is_(True)))).scalar_one_or_none()
+            return [user] if user else []
+        role, _, department = target.partition("@")
+        department = department or (self.run.department or "")
+        users = (await session.execute(select(User).where(User.is_active.is_(True)))).scalars().all()
+        return [u for u in users if any(m.get("department") == department and role in (m.get("roles") or [])
+                                        for m in (u.memberships or []))]
+
+    async def inbox(self, kind: str, target: str, title: str, body: str, due_in_days: Any = None) -> dict[str, Any]:
+        from app.models import InboxItem
+
+        async with self.sessions() as session:
+            users = await self._resolve_users(session, target)
+            if not users:
+                raise ToolError(f"no active user or role matches '{target}'", retryable=False)
+            due = None
+            if due_in_days not in (None, ""):
+                try:
+                    due = now() + timedelta(days=float(due_in_days))
+                except (TypeError, ValueError) as exc:
+                    raise ToolError("due_in_days must be a number", retryable=False) from exc
+            items = [InboxItem(id=uuid.uuid4(), user_id=u.id, kind=kind, title=str(title)[:300],
+                               body=str(body)[:20_000], run_id=self.run.id, due_at=due) for u in users[:200]]
+            session.add_all(items)
+            await session.commit()
+        key = "task_id" if kind == "task" else "notification_id"
+        count_key = "assignees" if kind == "task" else "recipients"
+        return {key: str(items[0].id), count_key: len(items)}
+
+    async def connection(self, capability_connector: str) -> tuple[Any, str | None]:
+        from app.connections.connectors import CONNECTOR_TYPES
+        from app.connections.crypto import SecretStoreError, decrypt_secret
+        from app.models import Connection
+
+        types = [t for t, spec in CONNECTOR_TYPES.items() if spec["capability_connector"] == capability_connector]
+        async with self.sessions() as session:
+            rows = (await session.execute(
+                select(Connection).where(Connection.connector.in_(types), Connection.enabled.is_(True))
+                .order_by(Connection.created_at)
+            )).scalars().all()
+        usable = [c for c in rows if not c.departments or (self.run.department and self.run.department in c.departments)]
+        if not usable:
+            label = {"smtp": "email", "http": "business system", "chat": "Slack/Teams"}.get(capability_connector, capability_connector)
+            raise ToolError(f"no {label} connection is available for the "
+                            f"{self.run.department or 'unassigned'} department", retryable=False)
+        connection = usable[0]
+        try:
+            secret = decrypt_secret(connection.secret_encrypted) if connection.secret_encrypted else None
+        except SecretStoreError as exc:
+            raise ToolError(str(exc), retryable=False) from exc
+        return connection, secret

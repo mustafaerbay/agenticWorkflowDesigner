@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     sandbox_token: str = Field(default="change-me-sandbox-token", min_length=16)
     workspaces_dir: str = "/workspaces"
     artifacts_dir: str = "/artifacts"
+    uploads_dir: str = "/uploads"
+    upload_max_mb: int = 20
+
+    # Fernet key (urlsafe base64, 32 bytes) encrypting connection secrets at rest.
+    connection_encryption_key: str | None = None
+    # Designer model; falls back to the first configured provider.
+    designer_provider_name: str | None = None
     templates_dir: str = "/app/workspace_templates"
     sandbox_allowed_commands: list[str] = [
         "python",
