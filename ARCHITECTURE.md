@@ -879,3 +879,83 @@ When finished, provide:
 8. Kubernetes scaling recommendations.
 
 **Your ultimate goal is a genuinely functional visual Agentic AI SDLC platform, not a proof-of-concept UI.**
+## 22. Business-Friendly AI Workflow Creation (enhancement)
+
+The platform also serves non-technical employees in HR, Finance, Operations, IT and other
+departments. Technical complexity is hidden by default and stays available in Advanced mode.
+The detailed design is in `docs/superpowers/specs/2026-10-10-business-ai-workflow-design.md`.
+
+### Canonical model
+- The **Business Plan** (`bp/1`) is the single source of truth for business workflows. It is
+  typed, versioned JSON made of business steps (action, decision, approval, wait). Each step
+  names a registered **capability**, not an implementation.
+- A **deterministic compiler** turns a plan into the React Flow workflow definition that the
+  existing engine executes. Node ids equal stable step ids. Compiling the same plan always gives
+  the same output. `definition.meta` records the plan schema, compiler, registry and policy
+  versions and the plan hash.
+- React Flow is a view of the plan. Visual edits in the Advanced editor are translated back into
+  typed plan operations. Edits that cannot be represented safely are rejected with a reason,
+  never silently dropped. A workflow can be explicitly detached into an advanced-only workflow.
+- Workflows built only in the Advanced editor (no plan) remain fully supported.
+
+### Three creation modes, one schema and engine
+1. **AI-Assisted Builder (default)**: natural language → Business Plan → compiled graph, with a
+   business-language explanation, conversational changes, and diffs to confirm.
+2. **Template Builder**: department templates (HR, Finance, Operations, IT, Software
+   Development) that are themselves Business Plans and fully editable.
+3. **Advanced Builder**: the existing React Flow editor.
+
+### AI Workflow Designer (`backend/app/designer`)
+- A pluggable `Planner` interface. v1 is an LLM planner on the configured OpenAI-compatible
+  provider, producing schema-validated JSON (never code). An agentic planner can be added later
+  without touching the compiler or the policy layer.
+- Pipeline:
+  1. analyze intent and select capabilities from the registry only
+  2. validate and repair
+  3. apply policy
+  4. compile
+  5. validate the graph
+  6. produce a deterministic explanation
+  7. user review
+- Conversational changes are typed operations (`add_step`, `remove_step`, `update_step`,
+  `set_condition`, `add_approval_before`, `set_retry`, `set_next`, `set_on_failure`,
+  `set_trigger`, `add_input`, `remove_input`, `rename`). They are applied transactionally and
+  shown as a diff before confirmation. Accepted changes create new versions; designer sessions
+  provide undo/redo.
+
+### Registries
+- **Capability registry**: business capabilities with descriptions, I/O schemas, allowed
+  departments, side-effect class, sensitivity, connector requirement, implementation, and a
+  simulation sample.
+- **Agent registry**: agents discoverable by capability, with departments, I/O schemas, required
+  tools, configuration requirements, constraints, version and availability.
+- **Tool and connector registry**: tools with capability, connector type, authentication, scopes,
+  department restrictions, side-effect class and approval requirement.
+- Each capability has a status: *available and authorized*, *requires connection*, *restricted by
+  policy*, or *not available*.
+- Missing capabilities are shown as setup requirements and are never faked or substituted.
+- **Connections** (SMTP, HTTP/webhook, Slack, Teams) are created by administrators through a
+  guided form. Secrets are encrypted at rest, write-only, and never reach the LLM, the browser
+  or workflow definitions. LLM recommendations never grant permissions.
+
+### Governance, independent of the LLM
+- Role-based access with department memberships (member, builder, approver, dept_admin) and
+  platform admins.
+- Workflow visibility and editing follow ownership and department. HR and Finance run data is
+  restricted to those groups.
+- Mandatory approval before communication, external-write and financial side effects. Missing
+  approvals are inserted by policy.
+- Separation of duties for financial approvals, enforced at decision time.
+- Workflows must be explicitly **enabled** (with acknowledgement of sensitive actions) before
+  real execution. Runs always execute the immutable enabled version snapshot.
+- Agent outputs and external documents are untrusted input. Data minimization: steps receive
+  only their declared parameters. Every security-relevant action is audited.
+
+### Simulation
+Simulation runs the draft through the same engine in `simulation` mode:
+- side-effect tools return labelled sample outputs instead of acting
+- approval outcomes come from the simulation input
+- waits are skipped
+
+Results are clearly marked as simulated. Simulation shows the branch path, missing integrations,
+approvals and expected outputs.
