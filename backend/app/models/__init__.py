@@ -317,6 +317,8 @@ class Connection(Base):
     connector: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # smtp | http | slack | teams
     config: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
     secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    # Alternative to a stored secret: the name of an Environment Variable that holds it.
+    secret_env: Mapped[str | None] = mapped_column(String(100))
     departments: Mapped[list[Any]] = mapped_column(default=list, nullable=False)  # [] = all departments
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_test_ok: Mapped[bool | None] = mapped_column(Boolean)

@@ -141,6 +141,15 @@ class Orchestrator:
             if wf.enabled_at and slot < wf.enabled_at:
                 continue  # never back-fill slots from before the workflow was enabled
             async with self.sessions() as session:
+                version_row = (await session.execute(select(WorkflowVersion).where(
+                    WorkflowVersion.workflow_id == wf.id, WorkflowVersion.version == wf.enabled_version))).scalar_one()
+                trigger = (version_row.definition.get("meta") or {}).get("trigger") or {}
+                active = (await session.execute(select(WorkflowRun.id).where(
+                    WorkflowRun.workflow_id == wf.id, WorkflowRun.mode == "real",
+                    WorkflowRun.status.in_(["PENDING", "RUNNING", "PAUSED", "WAITING_APPROVAL"])).limit(1))).first()
+            if active is not None and trigger.get("skip_if_running", True):
+                continue  # previous run still active (e.g. waiting for a review): skip this slot
+            async with self.sessions() as session:
                 try:
                     session.add(ScheduleFire(workflow_id=wf.id, slot=slot))
                     await session.flush()

@@ -53,6 +53,8 @@ export function authorizationPhrase(effect: SideEffect | string | null | undefin
       return "perform financial actions";
     case "internal":
       return "create items inside this platform (reports, tasks, notifications)";
+    case "proposal":
+      return app ? `propose changes in ${app} for human review (never merged automatically)` : "propose changes for human review";
     default:
       return "run this step";
   }
@@ -68,6 +70,8 @@ export function sideEffectLabel(effect: SideEffect | string | null | undefined):
       return "Financial action";
     case "internal":
       return "Creates items in this platform";
+    case "proposal":
+      return "Proposes changes for review";
     case "none":
       return "Read-only";
     default:

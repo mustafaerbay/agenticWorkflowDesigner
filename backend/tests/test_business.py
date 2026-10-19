@@ -246,7 +246,7 @@ def test_every_template_compiles_without_blocking_errors(template_id):
 
     template = get_template(template_id)
     plan = BusinessPlan.model_validate(template["plan"])
-    ctx = PolicyContext(department=plan.department, connected={"llm", "smtp", "http", "chat"},
+    ctx = PolicyContext(department=plan.department, connected={"llm", "smtp", "http", "chat", "github"},
                         departments={"hr", "finance", "operations", "it", "engineering"})
     evaluation = evaluate(plan, ctx)
     assert not evaluation.blocking, [f.as_dict() for f in evaluation.blocking]

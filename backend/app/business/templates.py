@@ -267,5 +267,56 @@ TEMPLATES: list[dict[str, Any]] = [
                 {"title": "Test results", "content": "{{steps.test.summary}}"})])},
 ]
 
+REVIEW_POLLS = 672  # 7 days of 15-minute checks
+
+TEMPLATES.append({"id": "eng_github_autofix", "name": "GitHub issue auto-fixer", "plan": {
+    **plan(
+        "GitHub issue auto-fixer", "engineering",
+        "Every 15 minutes: gets the repository, collects problems (issues labelled 'ai-fix', failing tests and code "
+        "scan findings), lets AI fix them, re-runs the tests and proposes the fix as a pull request. It then waits "
+        "until a reviewer merges or closes the pull request on GitHub. Nothing is merged automatically.",
+        [],
+        [action("get_code", "Get the code from GitHub", "github.clone_repository", {"repo": "owner/repository"}),
+         action("pending_fix", "Check for a fix already waiting for review", "github.find_open_fix",
+                {"repo": "owner/repository"}),
+         decision("already_waiting", "Is a proposed fix still waiting for review?",
+                  [branch("yes", "Still waiting", is_true("steps.pending_fix.open"), "end")], "find_issues"),
+         action("find_issues", "Find issues labelled for the AI", "github.list_issues",
+                {"repo": "owner/repository", "label": "ai-fix"}),
+         action("run_tests", "Run the tests", "code.run_tests", {}),
+         action("scan", "Scan the code for problems", "code.scan_repository", {}),
+         decision("anything_to_fix", "Is there anything to fix?",
+                  [branch("yes", "Problems found", {"op": "or", "rules": [
+                      cmp("gt", "steps.find_issues.count", 0), cmp("gt", "steps.run_tests.failed", 0),
+                      cmp("gt", "steps.run_tests.errors", 0), cmp("gt", "steps.scan.count", 0)]}, "fix")], "end"),
+         action("fix", "Fix the problems", "code.fix_issues",
+                {"issue": frm("steps.find_issues.first"), "test_failures": frm("steps.run_tests.failures"),
+                 "scan_findings": frm("steps.scan.findings")}),
+         action("verify", "Run the tests again", "code.run_tests", {}),
+         decision("fixed", "Do all tests pass now?",
+                  [branch("pass", "All tests pass", {"op": "and", "rules": [cmp("eq", "steps.verify.failed", 0),
+                                                                           cmp("eq", "steps.verify.errors", 0)]},
+                          "propose"),
+                   branch("retry", "Try again (max 3)", cmp("lt", "steps.fix.attempts", 3), "fix")],
+                  {"fail": "The problems could not be fixed in 3 attempts"}),
+         action("propose", "Propose the fix as a pull request", "github.open_pull_request",
+                {"repo": "owner/repository", "title": "{{steps.fix.title}}", "body": "{{steps.fix.summary}}",
+                 "issue_number": frm("steps.find_issues.first.number")}),
+         {"id": "wait_review", "kind": "wait", "title": "Wait 15 minutes for the review", "seconds": 900},
+         action("review_status", "Check the review", "github.pull_request_status",
+                {"repo": "owner/repository", "number": frm("steps.propose.number")}),
+         decision("reviewed", "Has the reviewer decided?",
+                  [branch("merged", "Merged", is_true("steps.review_status.merged"), "end"),
+                   branch("closed", "Closed without merging", cmp("eq", "steps.review_status.state", "closed"),
+                          {"fail": "The pull request was closed without merging"}),
+                   branch("waiting", "Still in review", cmp("lt", "steps.review_status.attempts", REVIEW_POLLS),
+                          "wait_review")],
+                  {"fail": "No review decision within 7 days"})],
+        trigger={"type": "schedule", "cron": "*/15 * * * *", "timezone": "UTC", "skip_if_running": True}),
+    "settings": {"max_loop_iterations": REVIEW_POLLS + 10, "max_total_steps": 3 * REVIEW_POLLS + 100,
+                 "max_duration_seconds": 8 * 86400},
+}})
+
+
 def get_template(template_id: str) -> dict[str, Any] | None:
     return next((t for t in TEMPLATES if t["id"] == template_id), None)

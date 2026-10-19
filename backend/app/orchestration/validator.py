@@ -16,9 +16,9 @@ AGENT_KINDS = {"llm", "scripted"}
 
 DEFAULT_SETTINGS = {"max_loop_iterations": 5, "max_total_steps": 100, "max_duration_seconds": 3600}
 SETTING_BOUNDS = {
-    "max_loop_iterations": (1, 100),
-    "max_total_steps": (1, 1000),
-    "max_duration_seconds": (10, 86400),
+    "max_loop_iterations": (1, 2000),
+    "max_total_steps": (1, 10000),
+    "max_duration_seconds": (10, 30 * 86400),
 }
 
 

@@ -1,5 +1,6 @@
 import { useAuthStore } from "@/stores/auth";
 import type {
+  ScheduleRequest,
   EnvVariable,
   EnvVariableIn,
   Capability,
@@ -260,6 +261,7 @@ export const api = {
   previewPlan: (id: string, operations: PlanOperation[]) =>
     request<Proposal>(`/workflows/${id}/plan/preview`, { method: "POST", body: { operations } }),
   applyPlan: (id: string, body: PlanApplyRequest) => request<Workflow>(`/workflows/${id}/plan/apply`, { method: "POST", body }),
+  setSchedule: (id: string, body: ScheduleRequest) => request<Workflow>(`/workflows/${id}/schedule`, { method: "PUT", body }),
   detachWorkflow: (id: string) => request<Workflow>(`/workflows/${id}/detach`, { method: "POST" }),
   simulateWorkflow: (id: string, body: SimulateRequest) => request<Run>(`/workflows/${id}/simulate`, { method: "POST", body }),
   enableWorkflow: (id: string, body: EnableRequest) => request<Workflow>(`/workflows/${id}/enable`, { method: "POST", body }),

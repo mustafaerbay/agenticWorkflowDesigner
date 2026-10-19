@@ -48,6 +48,18 @@ CONNECTOR_TYPES: dict[str, dict[str, Any]] = {
         ],
         "secret": {"key": "token", "label": "API token", "required": False},
     },
+    "github": {
+        "label": "GitHub", "capability_connector": "github",
+        "description": "Read issues, clone repositories and open pull requests on allow-listed GitHub repositories. "
+                       "The platform never merges; reviewers merge on GitHub.",
+        "fields": [
+            {"key": "allowed_repos", "label": "Allowed repositories (owner/name)", "type": "list", "required": True},
+            {"key": "branch_prefix", "label": "Branch prefix for proposed fixes", "type": "string", "required": False,
+             "default": "ai-fix/"},
+            {"key": "api_url", "label": "API URL", "type": "string", "required": False, "default": "https://api.github.com"},
+        ],
+        "secret": {"key": "token", "label": "Fine-grained personal access token", "required": True},
+    },
     "slack": {
         "label": "Slack", "capability_connector": "chat",
         "description": "Post messages to a Slack channel via an incoming webhook.",
@@ -97,6 +109,18 @@ def validate_config(connector_type: str, config: dict[str, Any], secret: str | N
             if not prefix.startswith("/"):
                 raise ValueError("allowed paths must start with /")
         clean["allowed_methods"] = [m.upper() for m in clean.get("allowed_methods") or ["GET"]]
+    if connector_type == "github":
+        from app.connections.github import BRANCH_RE, REPO_RE
+
+        for repo in clean["allowed_repos"]:
+            if not REPO_RE.match(repo):
+                raise ValueError(f"'{repo}' is not a repository name like owner/name")
+        prefix = clean.get("branch_prefix") or "ai-fix/"
+        if not BRANCH_RE.match(prefix) or prefix.startswith(("main", "master")):
+            raise ValueError("branch prefix must be a new namespace such as ai-fix/")
+        clean["branch_prefix"] = prefix
+        if urlsplit(clean.get("api_url") or "https://api.github.com").scheme != "https":
+            raise ValueError("API URL must be https")
     if connector_type == "smtp" and not EMAIL_RE.match(clean["from_address"]):
         raise ValueError("from address is not a valid email address")
     if connector_type in ("slack", "teams") and secret is not None:

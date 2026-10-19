@@ -224,6 +224,71 @@ async def import_archive(request: Request, workspace: str, path: str, label: str
     return {"path": path, "files": files}
 
 
+# -- code scanning and change collection ------------------------------------------------------
+
+class ScanRequest(BaseModel):
+    workspace: str
+    path: str = ""
+    max_findings: int = Field(default=50, ge=1, le=500)
+
+
+@app.post("/code/scan", dependencies=[Depends(require_token)])
+async def code_scan(req: ScanRequest) -> dict[str, Any]:
+    root = safe_path(req.workspace, ".").resolve()
+    target = safe_path(req.workspace, req.path or ".")
+    rel = str(target.relative_to(root)) if target != root else "."
+    # Default rules: syntax errors, undefined names, unused imports/variables and common bugs.
+    argv = ["ruff", "check", "--output-format", "json", "--no-cache", "--exit-zero",
+            "--select", "E9,F,B", rel]
+    result = await run_argv(root, argv, 120)
+    try:
+        raw = json.loads(result["stdout"] or "[]")
+    except ValueError:
+        raise HTTPException(status_code=500, detail=f"scanner failed: {result['stderr'][-300:]}")
+    findings = [{"file": str(Path(f["filename"]).resolve().relative_to(root)) if f.get("filename") else None,
+                 "line": (f.get("location") or {}).get("row"), "code": f.get("code"), "message": f.get("message")}
+                for f in raw]
+    by_code: dict[str, int] = {}
+    for f in findings:
+        by_code[str(f["code"])] = by_code.get(str(f["code"]), 0) + 1
+    summary = "No problems found" if not findings else f"{len(findings)} problem(s): " + ", ".join(
+        f"{k} x{v}" for k, v in sorted(by_code.items()))
+    return {"count": len(findings), "findings": findings[:req.max_findings], "summary": summary}
+
+
+class ChangesRequest(BaseModel):
+    workspace: str
+    max_bytes: int = Field(default=2_000_000, ge=1, le=10_000_000)
+
+
+@app.post("/git/changes", dependencies=[Depends(require_token)])
+async def git_changes(req: ChangesRequest) -> dict[str, Any]:
+    """Files changed since the workspace baseline, with their new content (text files only)."""
+    root = safe_path(req.workspace, ".").resolve()
+    for argv in (["git", "add", "-A"],):
+        await run_argv(root, argv, 60)
+    status = await run_argv(root, ["git", "diff", "--cached", "--name-status", "--no-renames", "HEAD"], 60)
+    changes: list[dict[str, Any]] = []
+    total = 0
+    for line in status["stdout"].splitlines():
+        if not line.strip():
+            continue
+        code, path = line.split("\t", 1)
+        if code.startswith("D"):
+            changes.append({"path": path, "deleted": True})
+            continue
+        file = safe_path(req.workspace, path)
+        data = file.read_bytes()
+        if b"\x00" in data[:8192]:
+            raise HTTPException(status_code=422, detail=f"binary file changed: {path}")
+        total += len(data)
+        if total > req.max_bytes:
+            raise HTTPException(status_code=413, detail="changes are too large to propose")
+        changes.append({"path": path, "content": data.decode("utf-8", errors="replace")})
+    diff = await run_argv(root, ["git", "diff", "--cached", "--stat", "HEAD"], 60)
+    return {"changes": changes, "stat": diff["stdout"][-4000:]}
+
+
 # -- uploaded documents and data (read-only mount at UPLOADS_DIR) -----------------------------
 
 MAX_DOC_BYTES = 25 * 1024 * 1024

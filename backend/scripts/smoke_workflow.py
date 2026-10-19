@@ -178,7 +178,7 @@ async def business_flow(c: "Client") -> None:
             headers[name] = {"Authorization": f"Bearer {token}"}
         clerk, approver = headers["clerk"], headers["approver"]
         templates = (await c.http.get("/api/templates", headers=clerk)).json()
-        check("14 department templates available", len(templates) == 14, f"{len(templates)} templates")
+        check("department templates available", len(templates) >= 15, f"{len(templates)} templates")
         wf = (await c.http.post("/api/templates/finance_invoice/use", json={"name": f"{TAG} invoice"}, headers=clerk)).json()
         c.created.append(wf["id"])
         check("template creates a draft business workflow", wf.get("status") == "draft" and wf.get("has_plan") is True,

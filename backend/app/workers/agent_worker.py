@@ -464,7 +464,16 @@ class WorkerServices:
                             f"{self.run.department or 'unassigned'} department", retryable=False)
         connection = usable[0]
         try:
-            secret = decrypt_secret(connection.secret_encrypted) if connection.secret_encrypted else None
+            if connection.secret_env:
+                from app.services.env_vars import resolve_env
+
+                async with self.sessions() as session:
+                    secret = await resolve_env(session, connection.secret_env)
+                if secret is None:
+                    raise ToolError(f"environment variable {connection.secret_env} used by connection "
+                                    f"'{connection.name}' is not defined", retryable=False)
+            else:
+                secret = decrypt_secret(connection.secret_encrypted) if connection.secret_encrypted else None
         except SecretStoreError as exc:
             raise ToolError(str(exc), retryable=False) from exc
         return connection, secret

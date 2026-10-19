@@ -60,7 +60,7 @@ INVOICE = b"ACME Ltd\nInvoice number: INV-42\nIBAN: DE00 1234\nTotal: 20,000.00 
 async def test_templates_catalog(api):
     admin = await login(api, *ADMIN)
     templates = (await api.get("/api/templates", headers=admin)).json()
-    assert len(templates) == 14
+    assert len(templates) == 15
     by_id = {t["id"]: t for t in templates}
     assert by_id["hr_leave_request"]["runs_locally"] and by_id["finance_invoice"]["runs_locally"]
     daily = by_id["ops_daily_report"]

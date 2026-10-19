@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScheduleCard } from "@/components/business/ScheduleCard";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { RunWorkflowDialog } from "@/components/RunWorkflowDialog";
@@ -172,6 +173,8 @@ export default function WorkflowOverviewPage() {
           </div>
         </div>
       </div>
+
+      <ScheduleCard workflow={wf} canEdit={canEdit} />
 
       <Tabs defaultValue="overview">
         <TabsList>

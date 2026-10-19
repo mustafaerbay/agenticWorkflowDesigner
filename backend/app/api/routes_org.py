@@ -118,13 +118,16 @@ class ConnectionIn(BaseModel):
     connector: str
     config: dict[str, Any] = Field(default_factory=dict)
     secret: str | None = Field(default=None, max_length=4000)
+    # Use an Environment Variable instead of storing the secret on the connection.
+    secret_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,99}$")
     departments: list[str] = Field(default_factory=list)
     enabled: bool = True
 
 
 def connection_out(c: Connection) -> dict[str, Any]:
     return {"id": str(c.id), "name": c.name, "connector": c.connector, "config": c.config,
-            "departments": c.departments or [], "enabled": c.enabled, "has_secret": bool(c.secret_encrypted),
+            "departments": c.departments or [], "enabled": c.enabled,
+            "has_secret": bool(c.secret_encrypted) or bool(c.secret_env), "secret_env": c.secret_env,
             "last_test_ok": c.last_test_ok, "last_test_at": c.last_test_at, "created_at": c.created_at}
 
 
@@ -147,7 +150,16 @@ async def _validated(db: AsyncSession, body: ConnectionIn, existing_secret: str 
     unknown = [d for d in body.departments if d not in known]
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown departments {unknown}")
-    secret = body.secret if body.secret not in (None, "") else existing_secret
+    from app.services.env_vars import resolve_env
+
+    if body.secret_env and body.secret:
+        raise HTTPException(status_code=422, detail="Provide either a secret or an environment variable, not both")
+    if body.secret_env:
+        secret = await resolve_env(db, body.secret_env)
+        if secret is None:
+            raise HTTPException(status_code=422, detail=f"Environment variable {body.secret_env} is not defined")
+    else:
+        secret = body.secret if body.secret not in (None, "") else existing_secret
     spec = CONNECTOR_TYPES.get(body.connector)
     if spec is None:
         raise HTTPException(status_code=422, detail=f"Unknown connector type '{body.connector}'")
@@ -165,11 +177,11 @@ async def create_connection(body: ConnectionIn, admin: User = Depends(require_ad
                             db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     config, secret = await _validated(db, body, None)
     try:
-        encrypted = encrypt_secret(secret) if secret else None
+        encrypted = encrypt_secret(secret) if secret and not body.secret_env else None
     except SecretStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     c = Connection(id=uuid.uuid4(), name=body.name, connector=body.connector, config=config, secret_encrypted=encrypted,
-                   departments=body.departments, enabled=body.enabled, created_by=admin.id)
+                   secret_env=body.secret_env, departments=body.departments, enabled=body.enabled, created_by=admin.id)
     db.add(c)
     audit(db, admin, "connection.create", "connection", c.id, {"connector": c.connector, "departments": c.departments})
     try:
@@ -190,7 +202,8 @@ async def update_connection(connection_id: uuid.UUID, body: ConnectionIn, admin:
     try:
         existing = decrypt_secret(c.secret_encrypted) if c.secret_encrypted and not body.secret else None
         config, secret = await _validated(db, body, existing)
-        c.secret_encrypted = encrypt_secret(secret) if secret else None
+        c.secret_encrypted = encrypt_secret(secret) if secret and not body.secret_env else None
+        c.secret_env = body.secret_env
     except SecretStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     c.name, c.config, c.departments, c.enabled = body.name, config, body.departments, body.enabled
@@ -226,8 +239,11 @@ async def test_connection(connection_id: uuid.UUID, admin: User = Depends(requir
     c = await db.get(Connection, connection_id)
     if c is None:
         raise HTTPException(status_code=404, detail="Connection not found")
+    from app.services.env_vars import resolve_env
+
     try:
-        secret = decrypt_secret(c.secret_encrypted) if c.secret_encrypted else None
+        secret = (await resolve_env(db, c.secret_env)) if c.secret_env else (
+            decrypt_secret(c.secret_encrypted) if c.secret_encrypted else None)
     except SecretStoreError as exc:
         return {"ok": False, "detail": str(exc)}
     ok, detail = False, ""
@@ -343,7 +359,9 @@ class EnvVariableUpdate(BaseModel):
 async def env_out(db: AsyncSession, v: EnvVariable) -> dict[str, Any]:
     from app.models import ModelProvider
 
-    used_by = (await db.execute(select(ModelProvider.name).where(ModelProvider.api_key_ref == v.name))).scalars().all()
+    used_by = list((await db.execute(select(ModelProvider.name).where(ModelProvider.api_key_ref == v.name))).scalars().all())
+    used_by += [f"Connection: {n}" for n in (await db.execute(
+        select(Connection.name).where(Connection.secret_env == v.name))).scalars().all()]
     editor = await db.get(User, v.updated_by) if v.updated_by else None
     return {"id": str(v.id), "name": v.name, "description": v.description, "has_value": True,
             "created_at": v.created_at, "updated_at": v.updated_at,

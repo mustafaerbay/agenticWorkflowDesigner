@@ -9,8 +9,10 @@ from typing import Any, Literal
 
 REGISTRY_VERSION = "2026.10.1"
 
-SideEffect = Literal["none", "internal", "communication", "external_write", "financial"]
-Connector = Literal["llm", "smtp", "http", "chat"]
+# "proposal": creates a reviewable proposal elsewhere (e.g. a pull request) that changes nothing until a
+# human accepts it there; it is not treated as sensitive by policy.
+SideEffect = Literal["none", "internal", "proposal", "communication", "external_write", "financial"]
+Connector = Literal["llm", "smtp", "http", "chat", "github"]
 DEPARTMENTS = ("hr", "finance", "operations", "it", "engineering")
 ALL = ("*",)
 SENSITIVE_EFFECTS = {"communication", "external_write", "financial"}
@@ -20,6 +22,7 @@ CONNECTOR_LABELS = {
     "smtp": "Email (SMTP)",
     "http": "Business system (HTTP API)",
     "chat": "Slack / Microsoft Teams",
+    "github": "GitHub",
 }
 
 
@@ -271,13 +274,79 @@ CAPABILITIES: dict[str, Capability] = {c.id: c for c in [
         {"commit": "(simulated)", "files": 1, "path": "repo"}, departments=("engineering", "it"),
         keywords=("git", "repository", "clone", "code")),
     Capability(
+        "github.clone_repository", "Get a GitHub repository",
+        "Downloads an allow-listed GitHub repository (private repositories too) into the workflow's private "
+        "workspace.", "Software development", "GitHub",
+        (F("repo", "Repository (owner/name)"), F("ref", "Branch", required=False)),
+        (F("commit", "Commit"), F("files", "Files", "number"), F("branch", "Branch")),
+        tool("github_clone", {"repo": "repo", "ref": "ref"}),
+        {"commit": "(simulated)", "files": 10, "branch": "main"}, departments=("engineering", "it"),
+        connector="github", keywords=("github", "clone", "repository", "private")),
+    Capability(
+        "github.list_issues", "Find issues to fix",
+        "Lists open GitHub issues that carry a label (for example 'ai-fix').", "Software development", "GitHub",
+        (F("repo", "Repository (owner/name)"), F("label", "Label", required=False)),
+        (F("count", "Number of issues", "number"), F("issues", "Issues", "list"), F("first", "First issue", "object")),
+        tool("github_list_issues", {"repo": "repo", "label": "label"}),
+        {"count": 1, "issues": [], "first": {"number": 1, "title": "(sample issue)", "body": ""}},
+        departments=("engineering", "it"), connector="github", keywords=("issue", "bug", "ticket", "github")),
+    Capability(
+        "github.find_open_fix", "Check for a pending proposed fix",
+        "Checks whether a pull request proposed by this platform is still waiting for review.",
+        "Software development", "GitHub", (F("repo", "Repository (owner/name)"),),
+        (F("open", "A proposal is pending", "boolean"), F("number", "Pull request", "number"), F("url", "Link")),
+        tool("github_find_open_fix", {"repo": "repo"}), {"open": False, "number": None, "url": None},
+        departments=("engineering", "it"), connector="github", keywords=("pull request", "pending")),
+    Capability(
+        "github.open_pull_request", "Propose the fix as a pull request",
+        "Uploads the workspace changes to a new branch and opens a pull request for human review. Nothing is "
+        "merged by the platform.", "Software development", "GitHub",
+        (F("repo", "Repository (owner/name)"), F("title", "Title"), F("body", "Description", required=False),
+         F("issue_number", "Issue it fixes", "number", required=False)),
+        (F("number", "Pull request", "number"), F("url", "Link"), F("branch", "Branch"), F("files_changed", "Files", "list")),
+        tool("github_open_pull_request", {"repo": "repo", "title": "title", "body": "body", "issue_number": "issue_number"}),
+        {"number": 1, "url": "(simulated)", "branch": "ai-fix/sample", "files_changed": []},
+        side_effect="proposal", sensitivity="medium", departments=("engineering", "it"), connector="github",
+        keywords=("pull request", "merge request", "pr", "mr", "propose")),
+    Capability(
+        "github.pull_request_status", "Check the review status",
+        "Checks whether a pull request has been merged, closed or is still open.", "Software development", "GitHub",
+        (F("repo", "Repository (owner/name)"), F("number", "Pull request", "number")),
+        (F("state", "State (open/merged/closed)"), F("merged", "Merged", "boolean"), F("closed", "Finished", "boolean"),
+         F("url", "Link")),
+        tool("github_pull_request_status", {"repo": "repo", "number": "number"}),
+        {"state": "merged", "merged": True, "closed": True, "url": "(simulated)"},
+        departments=("engineering", "it"), connector="github", keywords=("review", "merged", "status")),
+    Capability(
+        "code.scan_repository", "Scan the code for problems",
+        "Scans every Python file in the workspace for bugs, errors and risky patterns (ruff).",
+        "Software development", "Code scanner (sandbox)", (F("path", "Folder", required=False),),
+        (F("count", "Findings", "number"), F("findings", "Findings", "list"), F("summary", "Summary")),
+        tool("code_scan", {"path": "path"}), {"count": 0, "findings": [], "summary": "(sample)"},
+        departments=("engineering", "it"), keywords=("lint", "scan", "static analysis", "bugs")),
+    Capability(
+        "code.fix_issues", "Fix the reported problems",
+        "Uses AI to fix the given issue, failing tests or scan findings with minimal code changes, then re-runs the tests.",
+        "Software development", "AI development agent",
+        (F("issue", "Issue", "object", required=False), F("test_failures", "Failing tests", "list", required=False),
+         F("scan_findings", "Scan findings", "list", required=False)),
+        (F("title", "Change title"), F("summary", "What was changed"), F("files_changed", "Files changed", "list")),
+        agent("developer", "Fix exactly the reported problems with minimal, safe changes. Never weaken or delete tests. "
+              "Prefer the issue if one is given; otherwise fix failing tests, then scan findings. Run the tests before "
+              "finishing. Reply with a short imperative title (max 70 chars) for the pull request.",
+              ["list_files", "read_file", "search_files", "write_file", "run_tests"]),
+        {"title": "(sample fix)", "summary": "(sample)", "files_changed": []},
+        departments=("engineering",), connector="llm", keywords=("fix", "repair", "bug")),
+    Capability(
         "code.run_tests", "Run automated tests",
         "Runs the project's automated tests in an isolated sandbox.", "Software development", "Test runner (sandbox)",
         (F("path", "Test folder", required=False),),
         (F("tests_passed", "Tests passed", "boolean"), F("failed", "Failed tests", "number"),
-         F("coverage_percent", "Coverage %", "number"), F("summary", "Summary")),
+         F("errors", "Test errors", "number"), F("total", "Tests run", "number"),
+         F("failures", "Failure details", "list"), F("coverage_percent", "Coverage %", "number"), F("summary", "Summary")),
         tool("run_tests", {"path": "path"}),
-        {"tests_passed": True, "failed": 0, "coverage_percent": 90.0, "summary": "(sample)"},
+        {"tests_passed": True, "failed": 0, "errors": 0, "total": 10, "failures": [], "coverage_percent": 90.0,
+         "summary": "(sample)"},
         departments=("engineering", "it"), keywords=("test", "pytest", "quality")),
     Capability(
         "code.analyze_requirement", "Analyze a software requirement",
@@ -322,7 +391,7 @@ def get_capability(capability_id: str) -> Capability | None:
 
 def tool_side_effects() -> dict[str, str]:
     """Most severe side effect per tool name (used at runtime, e.g. by simulation)."""
-    order = ["none", "internal", "communication", "external_write", "financial"]
+    order = ["none", "internal", "proposal", "communication", "external_write", "financial"]
     effects: dict[str, str] = {}
     for cap in CAPABILITIES.values():
         if cap.implementation["kind"] == "tool":

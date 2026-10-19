@@ -100,12 +100,14 @@ async def _run(argv: list[str], cwd: str, env: dict[str, str], timeout: float) -
     return stdout.decode(errors="replace")
 
 
-async def fetch_repository(repo_url: str, ref: str | None, depth: int = 1) -> FetchedRepo:
+async def fetch_repository(repo_url: str, ref: str | None, depth: int = 1,
+                           auth_env: dict[str, str] | None = None) -> FetchedRepo:
+    """`auth_env` carries credentials as git config through the environment (never argv or disk)."""
     settings = get_settings()
     url = validate_repo_url(repo_url)
     ref = validate_ref(ref)
     with tempfile.TemporaryDirectory(prefix="git-fetch-") as tmp:
-        env = _child_env(tmp)
+        env = {**_child_env(tmp), **(auth_env or {})}
         dest = os.path.join(tmp, "repo")
         argv = [
             "git", "-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",

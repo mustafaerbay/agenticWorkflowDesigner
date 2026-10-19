@@ -186,6 +186,79 @@ async def _git_clone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             "path": path, "files": imported["files"], "bytes": repo.bytes}
 
 
+async def _github(ctx: ToolContext) -> tuple[Any, Any]:
+    from app.connections.github import GitHub
+
+    connection, token = await _services(ctx).connection("github")
+    return connection, GitHub(connection.config, token)
+
+
+async def _github_clone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.github import check_repo, clone_auth_env
+    from app.tools.git_fetch import FetchError, fetch_repository
+
+    connection, gh = await _github(ctx)
+    repo = check_repo(connection.config, args["repo"])
+    branch = args.get("ref") or await gh.default_branch(repo)
+    await ctx.ensure_workspace()
+    try:
+        fetched = await fetch_repository(f"https://github.com/{repo}", branch, 1, clone_auth_env(gh.token))
+    except FetchError as exc:
+        raise ToolError(str(exc), retryable=exc.retryable) from exc
+    # Repository files become the workspace root so tests and scans run as in the project itself.
+    await ctx.sandbox.upload("/workspace/import", {"workspace": ctx.run_id, "path": ".",
+                                                  "label": f"{repo}@{fetched.commit[:12]}"}, fetched.archive)
+    return {"repo": repo, "branch": branch, "commit": fetched.commit, "files": fetched.files}
+
+
+async def _github_list_issues(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.github import check_repo
+
+    connection, gh = await _github(ctx)
+    issues = await gh.list_issues(check_repo(connection.config, args["repo"]), args.get("label") or None)
+    return {"count": len(issues), "issues": issues, "first": issues[0] if issues else None}
+
+
+async def _github_find_open_fix(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.github import check_repo
+
+    connection, gh = await _github(ctx)
+    pulls = await gh.open_pulls(check_repo(connection.config, args["repo"]), connection.config.get("branch_prefix") or "ai-fix/")
+    first = pulls[0] if pulls else None
+    return {"open": bool(pulls), "number": first["number"] if first else None, "url": first["url"] if first else None,
+            "count": len(pulls)}
+
+
+async def _github_open_pull_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.github import check_repo
+
+    connection, gh = await _github(ctx)
+    repo = check_repo(connection.config, args["repo"])
+    if _services(ctx).run.mode == "simulation":
+        return {"number": 0, "url": "(simulated)", "branch": "(simulated)", "files_changed": [],
+                "_simulated": True, "_simulation_note": "No pull request is opened in a simulation"}
+    collected = await ctx.sandbox.call("/git/changes", {"workspace": ctx.run_id})
+    branch = f"{connection.config.get('branch_prefix') or 'ai-fix/'}{ctx.run_id[:8]}"
+    body = str(args.get("body") or "")
+    if args.get("issue_number"):
+        body += f"\n\nFixes #{int(args['issue_number'])}"
+    body += ("\n\n---\nProposed automatically by the Agentic SDLC platform. Review the changes carefully; "
+             "nothing is merged without a human.\n\n```\n" + collected["stat"] + "\n```")
+    return await gh.create_pull_request(repo, branch, str(args["title"]), body.strip(), collected["changes"])
+
+
+async def _github_pull_request_status(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from app.connections.github import check_repo
+
+    connection, gh = await _github(ctx)
+    return await gh.pull_status(check_repo(connection.config, args["repo"]), int(args["number"]))
+
+
+async def _code_scan(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    await ctx.ensure_workspace()
+    return await ctx.sandbox.call("/code/scan", {"workspace": ctx.run_id, "path": args.get("path") or ""})
+
+
 async def _create_report(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if ctx.save_artifact is None:
         raise ToolError("artifact storage unavailable")
@@ -376,6 +449,30 @@ TOOLS: dict[str, ToolSpec] = {
         ToolSpec("chat_post", "Post a message to the department's Slack or Teams channel.",
                  _obj({"text": {"type": "string"}}, ["text"]), _chat_post, _obj({"posted": {"type": "boolean"}}),
                  dangerous=True),
+        ToolSpec("github_clone", "Clone an allow-listed GitHub repository (private too) into the workspace root.",
+                 _obj({"repo": {"type": "string"}, "ref": {"type": "string"}}, ["repo"]), _github_clone,
+                 _obj({"repo": {"type": "string"}, "branch": {"type": "string"}, "commit": {"type": "string"},
+                       "files": {"type": "integer"}})),
+        ToolSpec("github_list_issues", "List open GitHub issues with an optional label.",
+                 _obj({"repo": {"type": "string"}, "label": {"type": "string"}}, ["repo"]), _github_list_issues,
+                 _obj({"count": {"type": "integer"}, "issues": {"type": "array"}, "first": {"type": ["object", "null"]}})),
+        ToolSpec("github_find_open_fix", "Find open pull requests previously proposed by this platform.",
+                 _obj({"repo": {"type": "string"}}, ["repo"]), _github_find_open_fix,
+                 _obj({"open": {"type": "boolean"}, "number": {"type": ["integer", "null"]}, "url": {"type": ["string", "null"]},
+                       "count": {"type": "integer"}})),
+        ToolSpec("github_open_pull_request", "Upload workspace changes to a new branch and open a pull request (never merges).",
+                 _obj({"repo": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"},
+                       "issue_number": {"type": ["integer", "null"]}}, ["repo", "title"]), _github_open_pull_request,
+                 _obj({"number": {"type": "integer"}, "url": {"type": "string"}, "branch": {"type": "string"},
+                       "files_changed": {"type": "array"}})),
+        ToolSpec("github_pull_request_status", "Get a pull request's state (open, merged or closed).",
+                 _obj({"repo": {"type": "string"}, "number": {"type": "integer"}}, ["repo", "number"]),
+                 _github_pull_request_status,
+                 _obj({"state": {"type": "string"}, "merged": {"type": "boolean"}, "closed": {"type": "boolean"},
+                       "url": {"type": "string"}})),
+        ToolSpec("code_scan", "Scan the workspace's Python code for errors and likely bugs (ruff).",
+                 _obj({"path": {"type": "string"}}), _code_scan,
+                 _obj({"count": {"type": "integer"}, "findings": {"type": "array"}, "summary": {"type": "string"}})),
         ToolSpec("create_report", "Create a Markdown development report artifact (auto-generated if no content).",
                  _obj({"title": {"type": "string"}, "content": {"type": "string"}, "name": {"type": "string"}}),
                  _create_report, _obj({**ARTIFACT_SCHEMA, "title": {"type": "string"}, "preview": {"type": "string"}})),

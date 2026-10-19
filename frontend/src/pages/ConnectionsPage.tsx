@@ -19,7 +19,8 @@ import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/
 import { ChipsInput } from "@/components/business/ChipsInput";
 import { departmentName } from "@/business/labels";
 import { api, errorMessage, queryKeys } from "@/services/api";
-import { useConnectors, useDepartments } from "@/services/queries";
+import { useConnectors, useDepartments, useEnvVariables } from "@/services/queries";
+import { EnvVariableDialog } from "@/pages/EnvVariablesPage";
 import { cn, formatRelative } from "@/lib/utils";
 import type { Connection, ConnectionIn, ConnectionTestResult, ConnectorField, ConnectorType, JSONObject, JSONValue } from "@/types";
 
@@ -80,6 +81,11 @@ function ConnectionWizard({
   const [values, setValues] = useState<Record<string, FieldValue>>({});
   // Write-only: never prefilled, never displayed after saving.
   const [secret, setSecret] = useState("");
+  // Where the secret comes from: typed here (stored encrypted) or an Environment Variable.
+  const [secretSource, setSecretSource] = useState<"stored" | "env">("stored");
+  const [secretEnv, setSecretEnv] = useState("");
+  const [creatingVar, setCreatingVar] = useState(false);
+  const envVars = useEnvVariables(open);
   const [depts, setDepts] = useState<string[]>([]);
   const [saved, setSaved] = useState<Connection | null>(null);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
@@ -90,6 +96,8 @@ function ConnectionWizard({
     setSecret("");
     setSaved(null);
     setTestResult(null);
+    setSecretSource(connection?.secret_env ? "env" : "stored");
+    setSecretEnv(connection?.secret_env ?? "");
     if (connection) {
       const s = connectors.find((c) => c.type === connection.connector);
       setType(connection.connector);
@@ -121,7 +129,8 @@ function ConnectionWizard({
         config: buildConnectionConfig(spec?.fields ?? [], values),
         departments: depts,
       };
-      if (secret) body.secret = secret;
+      if (secretSource === "env") body.secret_env = secretEnv;
+      else if (secret) body.secret = secret;
       return connection ? api.updateConnection(connection.id, body) : api.createConnection(body);
     },
     onSuccess: (c) => {
@@ -148,7 +157,10 @@ function ConnectionWizard({
     const v = values[f.key];
     return Array.isArray(v) ? v.length === 0 : typeof v === "string" ? !v.trim() : false;
   });
-  const secretMissing = !!spec?.secret.required && !secret && !connection?.has_secret;
+  const secretMissing =
+    secretSource === "env"
+      ? !secretEnv
+      : !!spec?.secret.required && !secret && !(connection?.has_secret && !connection?.secret_env);
   const valid = !!spec && !!name.trim() && missingRequired.length === 0 && !secretMissing;
 
   return (
@@ -243,23 +255,63 @@ function ConnectionWizard({
                   </span>
                 }
                 hint={
-                  connection?.has_secret
-                    ? "A secret is stored. Leave this empty to keep it, or type a new one to replace it."
-                    : "Stored encrypted. It is never shown again — not even to administrators."
+                  secretSource === "env"
+                    ? "The value is read from this Environment Variable on the server each time it is used."
+                    : connection?.has_secret && !connection?.secret_env
+                      ? "A secret is stored. Leave this empty to keep it, or type a new one to replace it."
+                      : "Stored encrypted. It is never shown again — not even to administrators."
                 }
               >
                 {(id) => (
-                  <Input
-                    id={id}
-                    type="password"
-                    autoComplete="new-password"
-                    value={secret}
-                    placeholder={connection?.has_secret ? "Secret stored — leave empty to keep" : ""}
-                    onChange={(e) => setSecret(e.target.value)}
-                    data-testid="connection-secret"
-                  />
+                  <div className="space-y-2">
+                    <div className="flex gap-3 text-xs" role="radiogroup" aria-label="Secret source">
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" name="secret-source" checked={secretSource === "stored"} onChange={() => setSecretSource("stored")} />
+                        Enter it here
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="radio" name="secret-source" checked={secretSource === "env"} onChange={() => setSecretSource("env")} />
+                        Use an environment variable
+                      </label>
+                    </div>
+                    {secretSource === "stored" ? (
+                      <Input
+                        id={id}
+                        type="password"
+                        autoComplete="new-password"
+                        value={secret}
+                        placeholder={connection?.has_secret && !connection?.secret_env ? "Secret stored — leave empty to keep" : ""}
+                        onChange={(e) => setSecret(e.target.value)}
+                        data-testid="connection-secret"
+                      />
+                    ) : (
+                      <div className="flex gap-2">
+                        <Select id={id} className="flex-1 font-mono" value={secretEnv} onChange={(e) => setSecretEnv(e.target.value)} aria-label="Environment variable">
+                          <option value="">Choose a variable…</option>
+                          {(envVars.data ?? []).map((v) => (
+                            <option key={v.id} value={v.name}>
+                              {v.name}
+                            </option>
+                          ))}
+                          {secretEnv && !(envVars.data ?? []).some((v) => v.name === secretEnv) && <option value={secretEnv}>{secretEnv}</option>}
+                        </Select>
+                        <Button type="button" variant="outline" size="sm" onClick={() => setCreatingVar(true)}>
+                          <Plus /> New variable
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 )}
               </Field>
+              <EnvVariableDialog
+                open={creatingVar}
+                onOpenChange={setCreatingVar}
+                suggestedName={spec ? `${spec.type.toUpperCase()}_TOKEN` : undefined}
+                onSaved={(v) => {
+                  setSecretSource("env");
+                  setSecretEnv(v.name);
+                }}
+              />
               <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
                 <Lock className="mt-px size-3 shrink-0" aria-hidden />
                 Secrets are encrypted on the server, never returned to the browser and never included in workflows or sent to the AI.
@@ -413,10 +465,16 @@ export default function ConnectionsPage() {
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
                       {c.enabled ? <Badge variant="success">Enabled</Badge> : <Badge variant="muted">Disabled</Badge>}
-                      {c.has_secret && (
-                        <Badge variant="secondary">
-                          <Lock aria-hidden /> Secret stored
+                      {c.secret_env ? (
+                        <Badge variant="secondary" className="font-mono">
+                          <Lock aria-hidden /> ${c.secret_env}
                         </Badge>
+                      ) : (
+                        c.has_secret && (
+                          <Badge variant="secondary">
+                            <Lock aria-hidden /> Secret stored
+                          </Badge>
+                        )
                       )}
                     </div>
                   </TableCell>

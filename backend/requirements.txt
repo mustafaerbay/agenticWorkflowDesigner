@@ -18,3 +18,4 @@ croniter==6.2.4
 pypdf==6.20.0
 cryptography==50.0.2
 python-multipart==0.0.32
+ruff==0.17.1

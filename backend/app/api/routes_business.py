@@ -458,3 +458,49 @@ async def disable(workflow_id: uuid.UUID, user: User = Depends(current_user),
 
 
 __all__ = ["router", "all_statuses"]
+
+
+class ScheduleIn(BaseModel):
+    enabled: bool = True  # False = manual only
+    cron: str | None = Field(default=None, max_length=100)
+    timezone: str = Field(default="UTC", max_length=64)
+    skip_if_running: bool = True
+
+
+@router.put("/workflows/{workflow_id}/schedule")
+async def set_schedule(workflow_id: uuid.UUID, body: ScheduleIn, user: User = Depends(current_user),
+                       db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Change when a workflow runs. A schedule-only change keeps an enabled workflow enabled (new version,
+    same authorizations), because it does not change what the workflow is allowed to do."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from croniter import croniter
+
+    from app.api.routes_workflows import to_out
+
+    wf = await load_workflow(db, workflow_id, user, write=True)
+    if body.enabled:
+        if not body.cron or not croniter.is_valid(body.cron):
+            raise HTTPException(status_code=422, detail="Enter a valid schedule (5-field cron, e.g. */15 * * * *)")
+        try:
+            ZoneInfo(body.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Unknown time zone {body.timezone}") from exc
+    plan = await _plan_of(db, wf)
+    trigger = ({"type": "schedule", "cron": body.cron, "timezone": body.timezone, "skip_if_running": body.skip_if_running}
+               if body.enabled else {"type": "manual"})
+    previous_enabled = wf.status == "enabled" and wf.enabled_version == wf.current_version
+    try:
+        evaluation = preview_operations(plan, parse_operations([{"op": "set_trigger", "trigger": trigger}]),
+                                        await policy_context(db, wf.department))
+        await save_plan_version(db, wf, evaluation, user, "Changed the schedule")
+    except OperationError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc), "findings": []}) from exc
+    if previous_enabled:
+        wf.enabled_version = wf.current_version
+        wf.schedule_cron = body.cron if body.enabled else None
+        wf.schedule_timezone = body.timezone if body.enabled else None
+    audit(db, user, "workflow.schedule", "workflow", wf.id,
+          {"trigger": trigger, "version": wf.current_version, "kept_enabled": previous_enabled})
+    await db.commit()
+    return await to_out(db, wf, user=user)

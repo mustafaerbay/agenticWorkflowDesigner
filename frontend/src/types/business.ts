@@ -43,7 +43,7 @@ export interface UserUpdate {
 // ---------------------------------------------------------------------------
 
 export type CapabilityStatus = "available" | "requires_connection" | "restricted" | "unavailable";
-export type SideEffect = "none" | "internal" | "communication" | "external_write" | "financial";
+export type SideEffect = "none" | "internal" | "proposal" | "communication" | "external_write" | "financial";
 
 export interface CapabilityField {
   key: string;
@@ -93,6 +93,14 @@ export interface PlanTrigger {
   type: "manual" | "schedule" | "api";
   cron?: string | null;
   timezone: string;
+  skip_if_running?: boolean;
+}
+
+export interface ScheduleRequest {
+  enabled: boolean;
+  cron?: string | null;
+  timezone?: string;
+  skip_if_running?: boolean;
 }
 
 export interface PlanRetry {
@@ -410,6 +418,8 @@ export interface Connection {
   departments: string[];
   enabled: boolean;
   has_secret: boolean;
+  /** Name of the Environment Variable holding the secret, if used instead of a stored secret. */
+  secret_env?: string | null;
   last_test_ok: boolean | null;
   last_test_at: string | null;
   created_at: string;
@@ -421,6 +431,8 @@ export interface ConnectionIn {
   config: JSONObject;
   /** Write-only. Omit to keep the stored secret. */
   secret?: string;
+  /** Use an Environment Variable instead of a stored secret. */
+  secret_env?: string | null;
   departments: string[];
 }
 

@@ -48,6 +48,8 @@ class Trigger(Strict):
     type: Literal["manual", "schedule", "api"] = "manual"
     cron: str | None = Field(default=None, max_length=100)
     timezone: str = Field(default="UTC", max_length=64)
+    # Scheduled runs are skipped while a previous run of the workflow is still active.
+    skip_if_running: bool = True
 
 
 class StepBase(Strict):
@@ -120,9 +122,9 @@ Step = Annotated[ActionStep | DecisionStep | ApprovalStep | WaitStep, Field(disc
 
 
 class Settings(Strict):
-    max_loop_iterations: int = Field(default=5, ge=1, le=100)
-    max_total_steps: int = Field(default=100, ge=1, le=1000)
-    max_duration_seconds: int = Field(default=3600, ge=10, le=86400)
+    max_loop_iterations: int = Field(default=5, ge=1, le=2000)
+    max_total_steps: int = Field(default=100, ge=1, le=10000)
+    max_duration_seconds: int = Field(default=3600, ge=10, le=30 * 86400)  # long waits, e.g. for a code review
 
 
 class BusinessPlan(Strict):
