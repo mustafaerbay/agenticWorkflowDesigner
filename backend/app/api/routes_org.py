@@ -19,7 +19,7 @@ from app.core import permissions
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.security import hash_password
-from app.models import Connection, Department, InboxItem, UploadedFile, User, utcnow
+from app.models import Connection, Department, EnvVariable, InboxItem, UploadedFile, User, utcnow
 
 router = APIRouter(prefix="/api", tags=["organization"])
 
@@ -319,3 +319,106 @@ async def inbox_done(item_id: uuid.UUID, user: User = Depends(current_user),
     item.done_at = item.done_at or utcnow()
     await db.commit()
     return inbox_out(item)
+
+
+# -- environment variables (admin) -----------------------------------------------------------
+
+ENV_NAME = r"^[A-Z][A-Z0-9_]{0,99}$"
+# Names of the platform's own settings: a variable with these names could be confused with them.
+RESERVED_ENV = {"DATABASE_URL", "REDIS_URL", "RABBITMQ_URL", "JWT_SECRET", "SANDBOX_TOKEN", "ADMIN_PASSWORD",
+                "ADMIN_EMAIL", "CONNECTION_ENCRYPTION_KEY", "POSTGRES_PASSWORD", "RABBITMQ_PASSWORD", "PATH", "HOME"}
+
+
+class EnvVariableIn(BaseModel):
+    name: str = Field(pattern=ENV_NAME)
+    value: str = Field(min_length=1, max_length=20_000)
+    description: str = Field(default="", max_length=1000)
+
+
+class EnvVariableUpdate(BaseModel):
+    value: str | None = Field(default=None, min_length=1, max_length=20_000)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+async def env_out(db: AsyncSession, v: EnvVariable) -> dict[str, Any]:
+    from app.models import ModelProvider
+
+    used_by = (await db.execute(select(ModelProvider.name).where(ModelProvider.api_key_ref == v.name))).scalars().all()
+    editor = await db.get(User, v.updated_by) if v.updated_by else None
+    return {"id": str(v.id), "name": v.name, "description": v.description, "has_value": True,
+            "created_at": v.created_at, "updated_at": v.updated_at,
+            "updated_by": editor.email if editor else None, "used_by": list(used_by)}
+
+
+async def _load_env(db: AsyncSession, variable_id: uuid.UUID) -> EnvVariable:
+    v = await db.get(EnvVariable, variable_id)
+    if v is None:
+        raise HTTPException(status_code=404, detail="Variable not found")
+    return v
+
+
+@router.get("/env-variables")
+async def list_env(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
+    rows = (await db.execute(select(EnvVariable).order_by(EnvVariable.name))).scalars().all()
+    return [await env_out(db, v) for v in rows]
+
+
+@router.post("/env-variables", status_code=201)
+async def create_env(body: EnvVariableIn, admin: User = Depends(require_admin),
+                     db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    if body.name in RESERVED_ENV:
+        raise HTTPException(status_code=422, detail=f"'{body.name}' is reserved for the platform's own configuration")
+    try:
+        encrypted = encrypt_secret(body.value)
+    except SecretStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    v = EnvVariable(id=uuid.uuid4(), name=body.name, value_encrypted=encrypted, description=body.description,
+                    created_by=admin.id, updated_by=admin.id)
+    db.add(v)
+    audit(db, admin, "env_variable.create", "env_variable", v.id, {"name": v.name})
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail=f"A variable named {body.name} already exists") from exc
+    return await env_out(db, v)
+
+
+@router.put("/env-variables/{variable_id}")
+async def update_env(variable_id: uuid.UUID, body: EnvVariableUpdate, admin: User = Depends(require_admin),
+                     db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    v = await _load_env(db, variable_id)
+    if body.value is not None:
+        try:
+            v.value_encrypted = encrypt_secret(body.value)
+        except SecretStoreError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if body.description is not None:
+        v.description = body.description
+    v.updated_by, v.updated_at = admin.id, utcnow()
+    audit(db, admin, "env_variable.update", "env_variable", v.id,
+          {"name": v.name, "value_changed": body.value is not None})
+    await db.commit()
+    return await env_out(db, v)
+
+
+@router.delete("/env-variables/{variable_id}", status_code=204)
+async def delete_env(variable_id: uuid.UUID, admin: User = Depends(require_admin),
+                     db: AsyncSession = Depends(get_session)) -> Response:
+    v = await _load_env(db, variable_id)
+    await db.delete(v)
+    audit(db, admin, "env_variable.delete", "env_variable", variable_id, {"name": v.name})
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/env-variables/{variable_id}/reveal")
+async def reveal_env(variable_id: uuid.UUID, admin: User = Depends(require_admin),
+                     db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    v = await _load_env(db, variable_id)
+    try:
+        value = decrypt_secret(v.value_encrypted)
+    except SecretStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    audit(db, admin, "env_variable.reveal", "env_variable", v.id, {"name": v.name})
+    await db.commit()
+    return {"name": v.name, "value": value}

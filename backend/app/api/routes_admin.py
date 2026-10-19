@@ -173,6 +173,12 @@ async def delete_agent(agent_id: uuid.UUID, user: User = Depends(require_writer)
 
 # -- model providers ----------------------------------------------------------------
 
+async def provider_out_async(session: AsyncSession, p: ModelProvider) -> dict[str, Any]:
+    from app.services.env_vars import env_is_set
+
+    return {**provider_out(p), "api_key_configured": await env_is_set(session, p.api_key_ref)}
+
+
 def provider_out(p: ModelProvider) -> dict[str, Any]:
     return {"id": str(p.id), "name": p.name, "base_url": p.base_url, "default_model": p.default_model,
             "api_key_ref": p.api_key_ref, "timeout_seconds": p.timeout_seconds, "temperature": p.temperature,
@@ -182,7 +188,7 @@ def provider_out(p: ModelProvider) -> dict[str, Any]:
 
 @router.get("/api/model-providers", response_model=list[ProviderOut], tags=["models"])
 async def list_providers(user: User = Depends(current_user), session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
-    return [provider_out(p) for p in (await session.execute(select(ModelProvider).order_by(ModelProvider.created_at))).scalars()]
+    return [await provider_out_async(session, p) for p in (await session.execute(select(ModelProvider).order_by(ModelProvider.created_at))).scalars()]
 
 
 @router.post("/api/model-providers", response_model=ProviderOut, status_code=201, tags=["models"])
@@ -194,7 +200,7 @@ async def create_provider(body: ProviderIn, user: User = Depends(require_admin),
         await session.commit()
     except IntegrityError as exc:
         raise HTTPException(status_code=409, detail="A provider with this name already exists") from exc
-    return provider_out(provider)
+    return await provider_out_async(session, provider)
 
 
 async def _load_provider(session: AsyncSession, provider_id: uuid.UUID) -> ModelProvider:
@@ -206,7 +212,7 @@ async def _load_provider(session: AsyncSession, provider_id: uuid.UUID) -> Model
 
 @router.get("/api/model-providers/{provider_id}", response_model=ProviderOut, tags=["models"])
 async def get_provider(provider_id: uuid.UUID, user: User = Depends(current_user), session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    return provider_out(await _load_provider(session, provider_id))
+    return await provider_out_async(session, await _load_provider(session, provider_id))
 
 
 @router.put("/api/model-providers/{provider_id}", response_model=ProviderOut, tags=["models"])
@@ -217,7 +223,7 @@ async def update_provider(provider_id: uuid.UUID, body: ProviderIn, user: User =
         setattr(provider, key, value)
     audit(session, user, "provider.update", "model_provider", provider.id)
     await session.commit()
-    return provider_out(provider)
+    return await provider_out_async(session, provider)
 
 
 @router.delete("/api/model-providers/{provider_id}", status_code=204, tags=["models"])
@@ -232,7 +238,10 @@ async def delete_provider(provider_id: uuid.UUID, user: User = Depends(require_a
 @router.post("/api/model-providers/{provider_id}/test", response_model=ProviderTestOut, tags=["models"])
 async def test_provider(provider_id: uuid.UUID, user: User = Depends(require_writer), session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     provider = await _load_provider(session, provider_id)
-    client = LLMClient(provider.base_url, provider.default_model, provider.api_key_ref, provider.timeout_seconds)
+    from app.services.env_vars import resolve_env
+
+    client = LLMClient(provider.base_url, provider.default_model, provider.api_key_ref, provider.timeout_seconds,
+                       api_key=await resolve_env(session, provider.api_key_ref))
     try:
         models = await client.list_models()
     except LLMError as exc:

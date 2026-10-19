@@ -13,7 +13,10 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Field, numOrNull } from "@/components/Field";
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/States";
 import { api, errorMessage, queryKeys } from "@/services/api";
-import { useProviders } from "@/services/queries";
+import { useEnvVariables, useProviders } from "@/services/queries";
+import { Select } from "@/components/ui/select";
+import { useAuthStore } from "@/stores/auth";
+import { EnvVariableDialog } from "@/pages/EnvVariablesPage";
 import type { Provider, ProviderIn, ProviderTestResult } from "@/types";
 
 const ENV_RE = /^[A-Z_][A-Z0-9_]*$/;
@@ -24,7 +27,13 @@ function emptyProvider(): ProviderIn {
 
 function ProviderDialog({ provider, open, onOpenChange }: { provider?: Provider; open: boolean; onOpenChange: (o: boolean) => void }) {
   const [form, setForm] = useState<ProviderIn>(emptyProvider());
+  const [creatingVar, setCreatingVar] = useState(false);
   const qc = useQueryClient();
+  const admin = useAuthStore((s) => s.user?.role === "admin");
+  const vars = useEnvVariables(admin && open);
+  const varNames = (vars.data ?? []).map((v) => v.name);
+  const current = form.api_key_ref ?? "";
+  const fromServerEnv = current !== "" && vars.isSuccess && !varNames.includes(current);
   useEffect(() => {
     if (open) {
       setForm(
@@ -89,20 +98,40 @@ function ProviderDialog({ provider, open, onOpenChange }: { provider?: Provider;
             {(id) => <Input id={id} required className="font-mono" value={form.default_model} onChange={(e) => setForm({ ...form, default_model: e.target.value })} placeholder="gpt-4o-mini" />}
           </Field>
           <Field
-            label="API key environment variable"
+            label="API key"
             error={envErr}
-            hint="The NAME of an environment variable set on the API/worker servers. Keys stay server-side and are never sent to or shown in the browser."
+            hint={
+              admin
+                ? "Choose an environment variable that holds the key. The key stays on the server and is never sent to the browser."
+                : "The name of the environment variable that holds the key (managed by administrators)."
+            }
           >
-            {(id) => (
-              <Input
-                id={id}
-                className="font-mono"
-                autoComplete="off"
-                value={form.api_key_ref ?? ""}
-                onChange={(e) => setForm({ ...form, api_key_ref: e.target.value.toUpperCase() })}
-                placeholder="OPENAI_API_KEY"
-              />
-            )}
+            {(id) =>
+              admin ? (
+                <div className="flex gap-2">
+                  <Select
+                    id={id}
+                    className="flex-1 font-mono"
+                    value={current}
+                    onChange={(e) => setForm({ ...form, api_key_ref: e.target.value })}
+                    disabled={vars.isLoading}
+                  >
+                    <option value="">No API key (e.g. local Ollama / vLLM)</option>
+                    {varNames.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                    {fromServerEnv && <option value={current}>{current} (server .env)</option>}
+                  </Select>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setCreatingVar(true)}>
+                    <Plus /> New variable
+                  </Button>
+                </div>
+              ) : (
+                <Input id={id} className="font-mono" value={current} disabled placeholder="—" />
+              )
+            }
           </Field>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Timeout (s)">
@@ -116,7 +145,7 @@ function ProviderDialog({ provider, open, onOpenChange }: { provider?: Provider;
             </Field>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={!valid || save.isPending}>
@@ -124,6 +153,12 @@ function ProviderDialog({ provider, open, onOpenChange }: { provider?: Provider;
             </Button>
           </DialogFooter>
         </form>
+        <EnvVariableDialog
+          open={creatingVar}
+          onOpenChange={setCreatingVar}
+          suggestedName={form.name ? `${form.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "")}_API_KEY` : "LLM_API_KEY"}
+          onSaved={(v) => setForm((f) => ({ ...f, api_key_ref: v.name }))}
+        />
       </DialogContent>
     </Dialog>
   );
@@ -195,8 +230,8 @@ export default function ModelSettingsPage() {
       <div className="mb-4 flex items-start gap-2 rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
         <KeyRound className="mt-0.5 size-4 shrink-0" aria-hidden />
         <p>
-          API keys are never stored in the browser or the database. Each provider references the <b>name</b> of an
-          environment variable available to the backend (e.g. <code className="font-mono">OPENAI_API_KEY</code>).
+          API keys are kept in <b>Environment Variables</b> (encrypted on the server, never sent to the browser). Each provider
+          references a variable by name, for example <code className="font-mono">OPENAI_API_KEY</code>.
         </p>
       </div>
       <Card className="overflow-hidden">

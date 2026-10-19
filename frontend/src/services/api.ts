@@ -1,5 +1,7 @@
 import { useAuthStore } from "@/stores/auth";
 import type {
+  EnvVariable,
+  EnvVariableIn,
   Capability,
   Connection,
   ConnectionIn,
@@ -291,6 +293,14 @@ export const api = {
   createUser: (body: UserCreate) => request<User>("/users", { method: "POST", body }),
   updateUser: (id: string, body: UserUpdate) => request<User>(`/users/${id}`, { method: "PUT", body }),
 
+  // environment variables (admin)
+  listEnvVariables: () => request<EnvVariable[]>("/env-variables"),
+  createEnvVariable: (body: EnvVariableIn) => request<EnvVariable>("/env-variables", { method: "POST", body }),
+  updateEnvVariable: (id: string, body: { value?: string; description?: string }) =>
+    request<EnvVariable>(`/env-variables/${id}`, { method: "PUT", body }),
+  deleteEnvVariable: (id: string) => request<void>(`/env-variables/${id}`, { method: "DELETE" }),
+  revealEnvVariable: (id: string) => request<{ name: string; value: string }>(`/env-variables/${id}/reveal`, { method: "POST" }),
+
   // connectors / connections
   listConnectors: () => request<ConnectorType[]>("/connectors"),
   listConnections: () => request<Connection[]>("/connections"),
@@ -335,6 +345,7 @@ export const queryKeys = {
   templates: (department?: string) => ["templates", department ?? "all"] as const,
   connectors: ["connectors"] as const,
   connections: ["connections"] as const,
+  envVariables: ["env-variables"] as const,
   users: ["users"] as const,
   inbox: ["inbox"] as const,
 };

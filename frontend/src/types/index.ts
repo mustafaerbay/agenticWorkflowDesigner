@@ -494,3 +494,22 @@ export interface Stats {
 export interface ApiErrorBody {
   detail: string | Array<Record<string, unknown>> | ValidationResult | Record<string, unknown>;
 }
+
+// Environment variables (admin) ------------------------------------------------
+
+export interface EnvVariable {
+  id: string;
+  name: string;
+  description: string;
+  has_value: boolean;
+  created_at: string;
+  updated_at: string;
+  updated_by: string | null;
+  used_by: string[];
+}
+
+export interface EnvVariableIn {
+  name: string;
+  value: string;
+  description?: string;
+}

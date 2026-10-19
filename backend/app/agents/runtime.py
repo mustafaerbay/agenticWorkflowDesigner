@@ -41,7 +41,7 @@ class LLMAgent(BaseAgent):
                 retryable=False,
             )
         client = LLMClient(provider["base_url"], provider["model"], provider.get("api_key_ref"),
-                           float(provider.get("timeout_seconds") or 120))
+                           float(provider.get("timeout_seconds") or 120), api_key=provider.get("api_key"))
         schema = config.get("output_schema")
         tool_defs = [
             {"type": "function", "function": {"name": n, "description": TOOLS[n].description,

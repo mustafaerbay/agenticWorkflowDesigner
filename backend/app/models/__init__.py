@@ -378,3 +378,17 @@ class ScheduleFire(Base):
     slot: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     created_at: Mapped[datetime] = created_at()
+
+
+class EnvVariable(Base):
+    """Admin-managed variable (e.g. an API key) referenced by name. Value encrypted at rest."""
+
+    __tablename__ = "env_variables"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = created_at()
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)

@@ -14,6 +14,7 @@ import NotFoundPage from "@/pages/NotFoundPage";
 import TemplatesPage from "@/pages/TemplatesPage";
 import InboxPage from "@/pages/InboxPage";
 import ConnectionsPage from "@/pages/ConnectionsPage";
+import EnvVariablesPage from "@/pages/EnvVariablesPage";
 import UsersPage from "@/pages/UsersPage";
 
 // The two React Flow pages are code-split.
@@ -66,6 +67,7 @@ export const routes: RouteObject[] = [
           { path: "templates", element: <TemplatesPage /> },
           { path: "inbox", element: <InboxPage /> },
           { path: "settings/connections", element: <RequireAdmin><ConnectionsPage /></RequireAdmin> },
+          { path: "settings/variables", element: <RequireAdmin><EnvVariablesPage /></RequireAdmin> },
           { path: "settings/users", element: <RequireAdmin><UsersPage /></RequireAdmin> },
           { path: "workflows/:id/edit", element: <Lazy><WorkflowEditorPage /></Lazy>, handle: { fullBleed: true } },
           { path: "executions", element: <ExecutionsPage /> },

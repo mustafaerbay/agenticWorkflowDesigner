@@ -6,6 +6,7 @@ import {
   Cpu,
   History,
   Inbox,
+  KeyRound,
   LayoutDashboard,
   LayoutTemplate,
   Plug,
@@ -66,6 +67,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Configure",
     items: [
       { to: "/settings/models", label: "Model Settings", icon: Cpu },
+      { to: "/settings/variables", label: "Environment Variables", icon: KeyRound, adminOnly: true },
       { to: "/settings/connections", label: "Connections", icon: Plug, adminOnly: true },
       { to: "/settings/users", label: "Users", icon: Users, adminOnly: true },
     ],

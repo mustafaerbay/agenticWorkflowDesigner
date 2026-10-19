@@ -47,7 +47,7 @@ from app.workers.agent_worker import AgentWorker  # noqa: E402
 from app.workers.orchestrator import Orchestrator  # noqa: E402
 
 TABLES = [
-    "schedule_fires", "designer_sessions", "inbox_items", "files", "connections", "departments",
+    "env_variables", "schedule_fires", "designer_sessions", "inbox_items", "files", "connections", "departments",
     "audit_logs", "agent_artifacts", "approvals", "execution_events", "node_runs", "workflow_runs",
     "workflow_edges", "workflow_nodes", "workflow_versions", "workflows", "agent_versions", "agents",
     "model_providers", "tools", "users",

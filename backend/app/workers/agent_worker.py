@@ -241,6 +241,13 @@ class AgentWorker:
             await self._set_input(task, {"kind": kind, "prompt": prompt, "inputs": inputs,
                                          "tools": config.get("tools") or [],
                                          "model": (config.get("provider") or {}).get("model") if kind == "llm" else None})
+            if kind == "llm" and (config.get("provider") or {}).get("api_key_ref"):
+                from app.services.env_vars import resolve_env
+
+                async with self.sessions() as session:
+                    key = await resolve_env(session, config["provider"]["api_key_ref"])
+                # In memory only: never written to the run snapshot, node input or logs.
+                config = {**config, "provider": {**config["provider"], "api_key": key}}
             if kind == "scripted":
                 config = {**config, "steps": [
                     {**step, "args": resolve_refs(step.get("args") or {}, eval_ctx)} for step in config.get("steps") or []

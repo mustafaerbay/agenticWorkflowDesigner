@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ORM(BaseModel):
@@ -173,6 +173,14 @@ class ProviderIn(BaseModel):
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
     temperature: float = Field(default=0.2, ge=0, le=2)
     max_tokens: int = Field(default=2048, ge=1, le=200_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_means_default(cls, data: Any) -> Any:
+        # Forms send null for empty optional numbers; treat that as "use the default".
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if not (v is None and k in ("timeout_seconds", "temperature", "max_tokens"))}
+        return data
 
 
 class ProviderOut(ProviderIn):

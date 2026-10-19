@@ -11,10 +11,12 @@ class LLMError(Exception):
 
 
 class LLMClient:
-    def __init__(self, base_url: str, model: str, api_key_ref: str | None, timeout: float = 120) -> None:
+    def __init__(self, base_url: str, model: str, api_key_ref: str | None, timeout: float = 120,
+                 api_key: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.api_key = os.environ.get(api_key_ref) if api_key_ref else None
+        # An explicitly resolved key (platform variable) wins over the process environment.
+        self.api_key = api_key or (os.environ.get(api_key_ref) if api_key_ref else None)
         self.timeout = timeout
 
     def _headers(self) -> dict[str, str]:

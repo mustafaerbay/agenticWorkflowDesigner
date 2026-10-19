@@ -37,7 +37,10 @@ async def build_planner(session: AsyncSession) -> Planner:
     if provider is None:
         raise PlannerUnavailable("No AI model is configured. An administrator can add one under Model Settings; "
                                  "until then you can start from a template or use the advanced editor.")
-    client = LLMClient(provider.base_url, provider.default_model, provider.api_key_ref, max(provider.timeout_seconds, 120))
+    from app.services.env_vars import resolve_env
+
+    client = LLMClient(provider.base_url, provider.default_model, provider.api_key_ref, max(provider.timeout_seconds, 120),
+                       api_key=await resolve_env(session, provider.api_key_ref))
     return LlmPlanner(client, temperature=min(provider.temperature, 0.3), max_tokens=max(provider.max_tokens, 4096))
 
 
