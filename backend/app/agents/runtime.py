@@ -57,7 +57,10 @@ class LLMAgent(BaseAgent):
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         temperature = float(config.get("temperature") if config.get("temperature") is not None else provider.get("temperature", 0.2))
-        max_tokens = int(config.get("max_tokens") or provider.get("max_tokens") or 2048)
+        # The provider's Max tokens (Model Settings) caps every request, so admins can keep AI steps within
+        # their account's limits even when an agent preset asks for more.
+        requested = int(config.get("max_tokens") or provider.get("max_tokens") or 2048)
+        max_tokens = min(requested, int(provider["max_tokens"])) if provider.get("max_tokens") else requested
         max_steps = int(config.get("max_steps") or 8)
         repaired = False
         for step in range(1, max_steps + 1):

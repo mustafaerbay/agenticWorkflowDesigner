@@ -141,3 +141,31 @@ async def test_advanced_editor_model_change_becomes_operation(api):
     step = next(s for s in r.json()["plan"]["steps"] if s["id"] == "summary")
     assert step["ai"] == {"provider_id": first["id"], "model": "first-xl"}
 
+
+
+async def test_provider_max_tokens_caps_ai_steps(sandbox, monkeypatch):
+    """A preset asking for 4096 tokens is capped by the provider's Max tokens (e.g. to fit OpenRouter credit)."""
+    from app.agents.base import AgentContext
+    from app.agents.runtime import LLMAgent
+    from app.tools.registry import ToolContext
+
+    seen: list[int] = []
+
+    async def chat(self, messages, tools=None, temperature=0.2, max_tokens=2048, json_mode=False):
+        seen.append(max_tokens)
+        return {"choices": [{"message": {"content": "done"}}]}
+
+    monkeypatch.setattr(LLMClient, "chat", chat)
+
+    async def noop(*_: Any) -> None:
+        return None
+
+    run_id = "00000000-0000-0000-0000-0000000000aa"
+    for provider_cap, preset_tokens, expected in ((3000, 4096, 3000), (10000, 4096, 4096), (None, 4096, 4096)):
+        config = {"kind": "llm", "tools": [], "max_tokens": preset_tokens,
+                  "provider": {"base_url": "http://llm.test/v1", "model": "m", "max_tokens": provider_cap}}
+        ctx = AgentContext(run_id=run_id, node_id="n", node_run_id="r", config=config, inputs={}, prompt="hi",
+                           tools=ToolContext(run_id=run_id, node_run_id="r", sandbox=sandbox), report=noop,
+                           record_tool_call=noop)
+        await LLMAgent().execute(ctx)
+        assert seen[-1] == expected
