@@ -108,6 +108,15 @@ class SetLayout(Op):
     positions: dict[str, dict[str, float]]
 
 
+class SetAiModel(Op):
+    """Choose the AI model for one step (step_id) or the whole workflow (step_id null). Nulls clear it."""
+
+    op: Literal["set_ai_model"] = "set_ai_model"
+    step_id: str | None = None
+    provider_id: str | None = None
+    model: str | None = None
+
+
 class SetSettings(Op):
     op: Literal["set_settings"] = "set_settings"
     settings: dict[str, Any]
@@ -115,7 +124,7 @@ class SetSettings(Op):
 
 Operation = Annotated[
     AddStep | RemoveStep | UpdateStep | SetCondition | AddApprovalBefore | SetRetry | SetNext | SetOnFailure
-    | SetApprovalReject | SetTrigger | AddInput | RemoveInput | Rename | SetLayout | SetSettings,
+    | SetApprovalReject | SetTrigger | AddInput | RemoveInput | Rename | SetLayout | SetSettings | SetAiModel,
     Field(discriminator="op"),
 ]
 
@@ -299,6 +308,20 @@ def _apply_one(plan: BusinessPlan, op: Any) -> BusinessPlan:
         positions = dict(ui.get("positions") or {})
         positions.update({k: {"x": round(v["x"]), "y": round(v["y"])} for k, v in op.positions.items()})
         ui["positions"] = positions
+    elif isinstance(op, SetAiModel):
+        choice = {"provider_id": op.provider_id, "model": op.model} if (op.provider_id or op.model) else None
+        if op.step_id is None:
+            data["ai"] = choice
+        else:
+            _, step = _find(data, op.step_id)
+            if step["kind"] != "action":
+                raise OperationError("only AI steps have a model")
+            from app.business.capabilities import get_capability
+
+            cap = get_capability(step["capability"])
+            if cap is None or cap.implementation["kind"] != "agent":
+                raise OperationError(f"'{step['title']}' does not use an AI model")
+            step["ai"] = choice
     elif isinstance(op, SetSettings):
         data["settings"] = {**data["settings"], **op.settings}
     else:  # pragma: no cover

@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { aiSourceLabel, describeAiModel } from "./AiModelCard";
 import {
   AppWindow,
   ArrowDown,
@@ -82,6 +83,14 @@ export function StepCard({ step, index, highlight }: { step: ExplanationStep; in
               <>
                 <dt className="text-muted-foreground">App</dt>
                 <dd>{step.app}</dd>
+              </>
+            )}
+            {step.ai_model && (
+              <>
+                <dt className="text-muted-foreground">AI model</dt>
+                <dd data-testid={`step-model-${step.step_id}`}>
+                  {describeAiModel(step.ai_model)} <span className="text-muted-foreground">({aiSourceLabel(step.ai_model.source)})</span>
+                </dd>
               </>
             )}
             {step.needs && step.needs.length > 0 && (

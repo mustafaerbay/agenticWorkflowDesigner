@@ -201,6 +201,20 @@ export default function ModelSettingsPage() {
   const [editing, setEditing] = useState<Provider | undefined>();
   const [open, setOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Provider | null>(null);
+  const isAdmin = useAuthStore((s) => s.user?.role === "admin");
+  const list = providers.data ?? [];
+  // Mirrors the server: an explicit choice, otherwise the oldest provider.
+  const stepsDefault = list.find((p) => p.is_default) ?? list[0];
+  const designerProvider = list.find((p) => p.use_for_designer) ?? stepsDefault;
+  const setRole = useMutation({
+    mutationFn: ({ id, role }: { id: string; role: "steps" | "designer" }) => api.setProviderRole(id, role),
+    onSuccess: (_p, v) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.providers });
+      void qc.invalidateQueries({ queryKey: ["designer-status"] });
+      toast.success(v.role === "steps" ? "Default model for AI steps updated" : "AI builder model updated");
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteProvider(id),
     onSuccess: () => {
@@ -230,6 +244,10 @@ export default function ModelSettingsPage() {
       <div className="mb-4 flex items-start gap-2 rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
         <KeyRound className="mt-0.5 size-4 shrink-0" aria-hidden />
         <p>
+          <b>Which model is used?</b> AI steps use the model chosen on the step, otherwise the workflow&apos;s model (both set on the
+          workflow page), otherwise the provider marked <b>Default for AI steps</b> with its default model. The AI builder uses the
+          provider marked <b>AI builder</b>. Max tokens is the longest answer requested from the provider; keep it within your
+          account&apos;s limits. <br />
           API keys are kept in <b>Environment Variables</b> (encrypted on the server, never sent to the browser). Each provider
           references a variable by name, for example <code className="font-mono">OPENAI_API_KEY</code>.
         </p>
@@ -270,6 +288,22 @@ export default function ModelSettingsPage() {
                   <TableCell className="pl-4">
                     <p className="font-medium">{p.name}</p>
                     <p className="font-mono text-[11px] text-muted-foreground">{p.base_url}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1" data-testid={`roles-${p.name}`}>
+                      {stepsDefault?.id === p.id && <Badge variant="info">Default for AI steps{p.is_default ? "" : " (automatic)"}</Badge>}
+                      {designerProvider?.id === p.id && <Badge variant="secondary">AI builder{p.use_for_designer ? "" : " (automatic)"}</Badge>}
+                      {isAdmin && !p.is_default && (
+                        <Button variant="link" size="xs" className="h-auto px-1 text-[11px]" disabled={setRole.isPending}
+                          onClick={() => setRole.mutate({ id: p.id, role: "steps" })}>
+                          Make default
+                        </Button>
+                      )}
+                      {isAdmin && !p.use_for_designer && (
+                        <Button variant="link" size="xs" className="h-auto px-1 text-[11px]" disabled={setRole.isPending}
+                          onClick={() => setRole.mutate({ id: p.id, role: "designer" })}>
+                          Use for AI builder
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{p.default_model}</TableCell>
                   <TableCell>

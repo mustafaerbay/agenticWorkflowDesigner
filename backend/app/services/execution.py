@@ -31,6 +31,13 @@ def _overlay(base: dict[str, Any], top: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+async def default_provider(session: AsyncSession) -> ModelProvider | None:
+    """The provider marked as default for AI steps, otherwise the oldest one."""
+    return (await session.execute(
+        select(ModelProvider).order_by(ModelProvider.is_default.desc(), ModelProvider.created_at).limit(1)
+    )).scalar_one_or_none()
+
+
 async def effective_agent_config(session: AsyncSession, node_config: dict[str, Any]) -> dict[str, Any]:
     config: dict[str, Any] = {}
     preset = node_config.get("preset")
@@ -55,7 +62,7 @@ async def effective_agent_config(session: AsyncSession, node_config: dict[str, A
         if config.get("model_provider_id"):
             provider = await session.get(ModelProvider, uuid.UUID(str(config["model_provider_id"])))
         if provider is None:
-            provider = (await session.execute(select(ModelProvider).order_by(ModelProvider.created_at).limit(1))).scalar_one_or_none()
+            provider = await default_provider(session)
         if provider is not None:
             config["provider"] = {
                 "id": str(provider.id),

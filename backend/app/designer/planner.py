@@ -157,6 +157,11 @@ class LlmPlanner:
                 data = await self.client.chat(messages, None, self.temperature, self.max_tokens, json_mode=False)
             else:
                 raise PlannerUnavailable(str(exc)) from exc
+        if data["choices"][0].get("finish_reason") == "length":
+            # A cut-off JSON answer cannot be repaired by asking again with the same limit.
+            raise PlannerUnavailable(f"The AI model stopped at the Max tokens limit ({self.max_tokens}) before finishing "
+                                     "the workflow design. Increase Max tokens for this provider in Model Settings "
+                                     "(about 4000 is enough for most workflows).")
         usage = {k: int((data.get("usage") or {}).get(k) or 0) for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
         content = data["choices"][0]["message"].get("content") or ""
         try:

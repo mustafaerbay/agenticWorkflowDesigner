@@ -67,6 +67,13 @@ class StepBase(Strict):
         return v
 
 
+class AiModel(Strict):
+    """Which AI model AI steps use. Unset fields fall back (step -> workflow -> platform default)."""
+
+    provider_id: str | None = Field(default=None, max_length=64)
+    model: str | None = Field(default=None, max_length=200)
+
+
 class OnFailureGoto(Strict):
     goto: Target
 
@@ -78,6 +85,7 @@ class ActionStep(StepBase):
     params: dict[str, Any] = Field(default_factory=dict)
     retry: Retry | None = None
     on_failure: Literal["stop"] | OnFailureGoto = "stop"
+    ai: AiModel | None = None  # only used by AI capabilities
 
 
 class Branch(Strict):
@@ -136,6 +144,7 @@ class BusinessPlan(Strict):
     inputs: list[InputField] = Field(default_factory=list, max_length=30)
     steps: list[Step] = Field(min_length=1, max_length=60)
     settings: Settings = Field(default_factory=Settings)
+    ai: AiModel | None = None  # workflow-wide AI model
     ui: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)

@@ -103,7 +103,7 @@ async def _run_designer(db: AsyncSession, s: DesignerSession, message: str) -> N
         else:
             result = await design_new(planner, message, ctx)
     except PlannerUnavailable as exc:
-        raise HTTPException(status_code=502, detail=f"The AI model could not be reached: {exc}") from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except DesignerError as exc:
         s.messages = [*s.messages, {"role": "user", "content": message, "at": _now()},
                       {"role": "assistant", "content": str(exc), "at": _now(), "error": True}]
@@ -332,12 +332,16 @@ async def plan_apply(workflow_id: uuid.UUID, body: OperationsIn, user: User = De
     if body.base_version is not None and body.base_version != wf.current_version:
         raise HTTPException(status_code=409, detail="The workflow changed since you started editing. Reload and try again.")
     plan = await _plan_of(db, wf)
+    previous_enabled = wf.status == "enabled" and wf.enabled_version == wf.current_version
     try:
         operations = parse_operations(body.operations)
         evaluation = preview_operations(plan, operations, await policy_context(db, wf.department))
         await save_plan_version(db, wf, evaluation, user, body.summary or "Edited steps")
     except OperationError as exc:
         raise HTTPException(status_code=422, detail={"message": str(exc), "findings": []}) from exc
+    # Choosing another AI model or moving steps does not change what the workflow is allowed to do.
+    if previous_enabled and operations and all(o.op in ("set_ai_model", "set_layout") for o in operations):
+        wf.enabled_version = wf.current_version
     audit(db, user, "workflow.plan_apply", "workflow", wf.id,
           {"version": wf.current_version, "operations": [o.op for o in operations]})
     await db.commit()
@@ -422,7 +426,7 @@ async def enable(workflow_id: uuid.UUID, body: EnableIn, user: User = Depends(cu
     trigger: dict[str, Any] = {"type": "manual"}
     if version.plan is not None:
         evaluation = evaluate(BusinessPlan.model_validate(version.plan), await policy_context(db, wf.department))
-        if evaluation.plan.dump() != version.plan:
+        if evaluation.plan.dump() != BusinessPlan.model_validate(version.plan).dump():  # normalized (schema defaults)
             raise HTTPException(status_code=409, detail="Policy has changed since this version was saved. Open and save "
                                                          "the workflow again to apply the current policy.")
         findings = [f.as_dict() for f in evaluation.findings if f.severity in ("error", "setup")]

@@ -244,6 +244,8 @@ export const api = {
   createProvider: (body: ProviderIn) => request<Provider>("/model-providers", { method: "POST", body }),
   updateProvider: (id: string, body: ProviderIn) => request<Provider>(`/model-providers/${id}`, { method: "PUT", body }),
   deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, { method: "DELETE" }),
+  setProviderRole: (id: string, role: "steps" | "designer") =>
+    request<Provider>(`/model-providers/${id}/role`, { method: "POST", body: { role } }),
   testProvider: (id: string) => request<ProviderTestResult>(`/model-providers/${id}/test`, { method: "POST" }),
 
   // tools

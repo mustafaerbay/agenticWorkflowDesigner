@@ -125,7 +125,18 @@ def _business(step: Any, cap: Capability | None) -> dict[str, Any]:
     return info
 
 
-def _action_config(step: ActionStep, cap: Capability) -> tuple[str, dict[str, Any]]:
+def _ai_choice(step: ActionStep, plan_ai: Any) -> dict[str, Any]:
+    """Step-level choice wins field by field over the workflow-level choice."""
+    out: dict[str, Any] = {"provider_id": None, "model": None, "source": "default"}
+    for level, choice in (("workflow", plan_ai), ("step", step.ai)):
+        if choice is not None and choice.provider_id:
+            out.update(provider_id=choice.provider_id, model=choice.model, source=level)
+        elif choice is not None and choice.model:
+            out.update(model=choice.model, source=level)
+    return out
+
+
+def _action_config(step: ActionStep, cap: Capability, plan_ai: Any = None) -> tuple[str, dict[str, Any]]:
     impl = cap.implementation
     retry = step.retry.model_dump() if step.retry else {"max_attempts": 1, "backoff_seconds": 5}
     common = {"capability": cap.id, "side_effect": cap.side_effect, "connector": cap.connector}
@@ -152,9 +163,12 @@ def _action_config(step: ActionStep, cap: Capability) -> tuple[str, dict[str, An
         prompt += "\nParameters:\n" + "\n".join(literal_lines)
     if mapping:
         prompt += "\nThe remaining parameters are provided as JSON inputs: " + ", ".join(sorted(mapping))
+    ai = _ai_choice(step, plan_ai)
     return "agent", {
         "kind": "llm",
         "preset": impl["agent"],
+        "model_provider_id": ai.get("provider_id"),
+        "model": ai.get("model"),
         "system_prompt": None,
         "instructions": impl["instructions"],
         "user_prompt": prompt,
@@ -205,7 +219,7 @@ def compile_plan(plan: BusinessPlan, meta_extra: dict[str, Any] | None = None) -
         if isinstance(step, ActionStep):
             if cap is None:
                 raise CompileError(f"step '{step.id}' uses unknown capability '{step.capability}'")
-            node_type, config = _action_config(step, cap)
+            node_type, config = _action_config(step, cap, plan.ai)
         elif isinstance(step, DecisionStep):
             node_type = "condition"
             config = {"branches": [{"handle": b.id, "label": b.label, "rule": translate_rule(b.when)} for b in step.branches],

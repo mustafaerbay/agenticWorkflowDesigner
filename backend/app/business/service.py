@@ -8,11 +8,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.business.capabilities import CAPABILITIES, CONNECTOR_LABELS, Capability
+from app.business.capabilities import CAPABILITIES, CONNECTOR_LABELS, Capability, get_capability
 from app.business.compiler import CompileError, compile_plan
 from app.business.explain import explain_plan
 from app.business.operations import OperationError, apply_operations, diff_plans
-from app.business.plan import BusinessPlan
+from app.business.plan import ActionStep, BusinessPlan
 from app.business.policy import POLICY_VERSION, Finding, PolicyContext, apply_policy
 from app.connections.connectors import CONNECTOR_TYPES
 from app.models import Connection, Department, ModelProvider, User, Workflow, WorkflowVersion, utcnow
@@ -28,7 +28,32 @@ async def policy_context(session: AsyncSession, department: str | None) -> Polic
     if (await session.execute(select(ModelProvider.id).limit(1))).first() is not None:
         connected.add("llm")
     departments = set((await session.execute(select(Department.code))).scalars().all())
-    return PolicyContext(department=department, connected=connected, departments=departments)
+    providers_rows = (await session.execute(
+        select(ModelProvider).order_by(ModelProvider.is_default.desc(), ModelProvider.created_at))).scalars().all()
+    providers = {str(p.id): {"name": p.name, "default_model": p.default_model} for p in providers_rows}
+    return PolicyContext(department=department, connected=connected, departments=departments, providers=providers,
+                         default_provider_id=str(providers_rows[0].id) if providers_rows else None)
+
+
+def describe_ai(choice: Any, ctx: PolicyContext, fallback: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve an AI model choice to provider name + model, as AI steps will use it."""
+    base = dict(fallback or {})
+    if fallback is None:
+        default = (ctx.providers or {}).get(ctx.default_provider_id or "")
+        base = {"provider_id": ctx.default_provider_id, "provider": default["name"] if default else None,
+                "model": default["default_model"] if default else None, "source": "default"}
+    if choice is None:
+        return base
+    if choice.provider_id:
+        info = (ctx.providers or {}).get(choice.provider_id)
+        base.update(provider_id=choice.provider_id, provider=info["name"] if info else "(missing provider)",
+                    model=choice.model or (info["default_model"] if info else None))
+    elif choice.model:
+        base["model"] = choice.model
+    else:
+        return base
+    base["source"] = "custom"
+    return base
 
 
 def capability_status(cap: Capability, ctx: PolicyContext) -> dict[str, Any]:
@@ -73,7 +98,18 @@ def evaluate(plan: BusinessPlan, ctx: PolicyContext) -> Evaluation:
         validation = get_validator().validate(definition)
         for issue in validation.errors:
             findings.append(Finding("error", f"graph_{issue.code}", issue.message, issue.node_id))
-    return Evaluation(result.plan, definition, findings, explain_plan(result.plan, findings, all_statuses(ctx)))
+    explanation = explain_plan(result.plan, findings, all_statuses(ctx))
+    workflow_ai = describe_ai(result.plan.ai, ctx)
+    if result.plan.ai is not None and workflow_ai.get("source") == "custom":
+        workflow_ai["source"] = "workflow"
+    explanation["ai_model"] = workflow_ai
+    for entry in explanation["steps"]:
+        step = result.plan.step(entry["step_id"])
+        cap = get_capability(step.capability) if isinstance(step, ActionStep) else None
+        if cap is not None and cap.implementation["kind"] == "agent":
+            step_ai = describe_ai(step.ai, ctx, workflow_ai)
+            entry["ai_model"] = {**step_ai, "source": "step" if step_ai.get("source") == "custom" else workflow_ai["source"]}
+    return Evaluation(result.plan, definition, findings, explanation)
 
 
 def parse_plan_or_findings(data: Any) -> tuple[BusinessPlan | None, list[Finding]]:

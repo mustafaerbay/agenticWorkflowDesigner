@@ -434,6 +434,10 @@ export interface ProviderIn {
 export interface Provider extends ProviderIn {
   id: string;
   api_key_configured: boolean;
+  /** Default model provider for AI steps. */
+  is_default?: boolean;
+  /** Model provider used by the AI builder. */
+  use_for_designer?: boolean;
   created_at: string;
 }
 

@@ -116,12 +116,27 @@ interface StepBase {
   policy_inserted?: boolean;
 }
 
+/** AI model choice; unset fields fall back (step -> workflow -> platform default). */
+export interface AiModelChoice {
+  provider_id?: string | null;
+  model?: string | null;
+}
+
+/** The AI model a step will actually use, as resolved by the server. */
+export interface AiModelInfo {
+  provider_id: string | null;
+  provider: string | null;
+  model: string | null;
+  source: "default" | "workflow" | "step";
+}
+
 export interface ActionStep extends StepBase {
   kind: "action";
   capability: string;
   params: Record<string, JSONValue>;
   retry?: PlanRetry | null;
   on_failure?: "stop" | { goto: PlanTarget };
+  ai?: AiModelChoice | null;
 }
 
 export interface DecisionBranch {
@@ -162,6 +177,7 @@ export interface BusinessPlan {
   inputs: PlanInput[];
   steps: PlanStep[];
   settings: Record<string, JSONValue>;
+  ai?: AiModelChoice | null;
   ui: { positions?: Record<string, { x: number; y: number }> };
 }
 
@@ -199,6 +215,7 @@ export interface ExplanationStep {
   separation_of_duties?: boolean;
   note?: string;
   then?: string | null;
+  ai_model?: AiModelInfo;
 }
 
 export interface ExplanationIntegration {
@@ -231,6 +248,7 @@ export interface Explanation {
   outcomes: string[];
   findings: Finding[];
   ready_to_enable: boolean;
+  ai_model?: AiModelInfo;
 }
 
 export interface PlanDiff {

@@ -184,6 +184,8 @@ class ProviderIn(BaseModel):
 
 
 class ProviderOut(ProviderIn):
+    is_default: bool = False
+    use_for_designer: bool = False
     id: str
     api_key_configured: bool
     created_at: datetime

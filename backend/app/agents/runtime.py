@@ -67,7 +67,9 @@ class LLMAgent(BaseAgent):
             try:
                 data = await client.chat(messages, tool_defs or None, temperature, max_tokens, json_mode=bool(schema))
             except LLMError as exc:
-                raise AgentExecutionError(str(exc)) from exc
+                raise AgentExecutionError(str(exc), retryable=exc.retryable) from exc
+            if data["choices"][0].get("finish_reason") == "length" and not (data["choices"][0]["message"].get("tool_calls")):
+                await context.report(f"The model stopped at the Max tokens limit ({max_tokens}); the answer may be cut off")
             for key in usage:
                 usage[key] += int((data.get("usage") or {}).get(key) or 0)
             message = data["choices"][0]["message"]

@@ -10,6 +10,13 @@ export interface StepDraft {
   instructions: string;
   /** Max attempts as text ("" = unchanged / none). */
   retry: string;
+  /** AI steps only: provider id ("" = use the workflow's model) and model name ("" = provider default). */
+  aiProvider: string;
+  aiModel: string;
+}
+
+export function usesAiModel(step: PlanStep, capability: Capability | undefined): boolean {
+  return step.kind === "action" && capability?.implementation?.kind === "agent";
 }
 
 export type ParamKind = "text" | "number" | "list";
@@ -47,6 +54,8 @@ export function draftFor(step: PlanStep, capability: Capability | undefined): St
     params,
     instructions: step.kind === "approval" ? step.instructions ?? "" : "",
     retry: step.kind === "action" && step.retry ? String(step.retry.max_attempts) : "",
+    aiProvider: step.kind === "action" ? step.ai?.provider_id ?? "" : "",
+    aiModel: step.kind === "action" ? step.ai?.model ?? "" : "",
   };
 }
 
@@ -101,6 +110,13 @@ export function stepEditOperations(
       }
     }
     if (changed) ops.push(update);
+    if (step.kind === "action" && usesAiModel(step, capabilities.find((c) => c.id === step.capability))) {
+      const provider = d.aiProvider.trim() || null;
+      const model = d.aiModel.trim() || null;
+      if (provider !== (step.ai?.provider_id ?? null) || model !== (step.ai?.model ?? null)) {
+        ops.push({ op: "set_ai_model", step_id: step.id, provider_id: provider, model });
+      }
+    }
     if (step.kind === "action") {
       const retry = Number(d.retry.trim());
       const before = step.retry?.max_attempts ?? null;

@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScheduleCard } from "@/components/business/ScheduleCard";
+import { AiModelCard } from "@/components/business/AiModelCard";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { RunWorkflowDialog } from "@/components/RunWorkflowDialog";
@@ -174,7 +175,10 @@ export default function WorkflowOverviewPage() {
         </div>
       </div>
 
-      <ScheduleCard workflow={wf} canEdit={canEdit} />
+      <div className="grid gap-3 lg:grid-cols-2">
+        <ScheduleCard workflow={wf} canEdit={canEdit} />
+        <AiModelCard workflow={wf} canEdit={canEdit} />
+      </div>
 
       <Tabs defaultValue="overview">
         <TabsList>

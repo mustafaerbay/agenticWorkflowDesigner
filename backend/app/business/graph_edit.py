@@ -13,6 +13,7 @@ from app.business.compiler import compile_plan
 from app.business.operations import (
     AddStep,
     RemoveStep,
+    SetAiModel,
     SetApprovalReject,
     SetCondition,
     SetLayout,
@@ -176,7 +177,10 @@ def graph_to_operations(plan: BusinessPlan, new_definition: dict[str, Any]) -> t
                                     backoff_seconds=float(r.get("backoff_seconds") or 0)))
         elif ntype == "agent":
             technical = {k for k in set(new_cfg) | set(old_cfg)
-                         if k not in ("retry",) and new_cfg.get(k) != old_cfg.get(k)}
+                         if k not in ("retry", "model_provider_id", "model") and new_cfg.get(k) != old_cfg.get(k)}
+            if (new_cfg.get("model_provider_id"), new_cfg.get("model")) != (old_cfg.get("model_provider_id"), old_cfg.get("model")):
+                ops.append(SetAiModel(step_id=nid, provider_id=new_cfg.get("model_provider_id") or None,
+                                      model=new_cfg.get("model") or None))
             if technical:
                 bad.append(Unsupported(f"'{label(node)}': AI step settings ({', '.join(sorted(technical))}) are managed by "
                                        "its capability. Change the step's information in the business view, or detach "

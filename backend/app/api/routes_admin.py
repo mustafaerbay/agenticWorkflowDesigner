@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,7 +181,7 @@ async def provider_out_async(session: AsyncSession, p: ModelProvider) -> dict[st
 
 
 def provider_out(p: ModelProvider) -> dict[str, Any]:
-    return {"id": str(p.id), "name": p.name, "base_url": p.base_url, "default_model": p.default_model,
+    return {"is_default": p.is_default, "use_for_designer": p.use_for_designer,"id": str(p.id), "name": p.name, "base_url": p.base_url, "default_model": p.default_model,
             "api_key_ref": p.api_key_ref, "timeout_seconds": p.timeout_seconds, "temperature": p.temperature,
             "max_tokens": p.max_tokens, "created_at": p.created_at,
             "api_key_configured": bool(p.api_key_ref and os.environ.get(p.api_key_ref))}
@@ -233,6 +234,26 @@ async def delete_provider(provider_id: uuid.UUID, user: User = Depends(require_a
     audit(session, user, "provider.delete", "model_provider", provider_id)
     await session.commit()
     return Response(status_code=204)
+
+
+class ProviderRole(BaseModel):
+    role: str = Field(pattern="^(steps|designer)$")
+
+
+@router.post("/api/model-providers/{provider_id}/role", response_model=ProviderOut, tags=["models"])
+async def set_provider_role(provider_id: uuid.UUID, body: ProviderRole, user: User = Depends(require_admin),
+                            session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Make a provider the default for AI steps ("steps") or the model of the AI builder ("designer")."""
+    from sqlalchemy import update
+
+    provider = await _load_provider(session, provider_id)
+    column = ModelProvider.is_default if body.role == "steps" else ModelProvider.use_for_designer
+    await session.execute(update(ModelProvider).values({column.key: False}))
+    setattr(provider, column.key, True)
+    audit(session, user, f"provider.role.{body.role}", "model_provider", provider.id)
+    await session.commit()
+    await session.refresh(provider)
+    return await provider_out_async(session, provider)
 
 
 @router.post("/api/model-providers/{provider_id}/test", response_model=ProviderTestOut, tags=["models"])

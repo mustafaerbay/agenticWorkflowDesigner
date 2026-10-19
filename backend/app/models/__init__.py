@@ -157,6 +157,9 @@ class ModelProvider(Base):
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.2, nullable=False)
     max_tokens: Mapped[int] = mapped_column(Integer, default=2048, nullable=False)
+    # Explicit roles instead of "the first provider": default for AI steps, and the AI builder's model.
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    use_for_designer: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     created_at: Mapped[datetime] = created_at()
 
 

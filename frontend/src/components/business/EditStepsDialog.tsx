@@ -10,9 +10,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/Field";
 import { stepKindLabel } from "@/business/labels";
-import { draftFor, editableParamFields, paramKind, stepEditOperations, type StepDraft } from "@/business/stepEdits";
+import { draftFor, editableParamFields, paramKind, stepEditOperations, usesAiModel, type StepDraft } from "@/business/stepEdits";
+import { Select } from "@/components/ui/select";
 import { api, ApiError, errorDetailField, errorMessage, queryKeys } from "@/services/api";
-import { useCapabilities } from "@/services/queries";
+import { useCapabilities, useProviders } from "@/services/queries";
 import type { Finding, PlanOperation, Proposal, Workflow } from "@/types";
 import { DiffView } from "./Explanation";
 import { FindingsList, PolicyBadge } from "./Pills";
@@ -22,6 +23,7 @@ export function EditStepsDialog({ workflow, open, onOpenChange }: { workflow: Wo
   const qc = useQueryClient();
   const plan = workflow.plan!;
   const caps = useCapabilities(workflow.department ?? plan.department);
+  const providers = useProviders();
   const [drafts, setDrafts] = useState<Record<string, StepDraft>>({});
   const [review, setReview] = useState<{ ops: PlanOperation[]; proposal: Proposal } | null>(null);
   const [error, setError] = useState<{ message: string; findings: Finding[] } | null>(null);
@@ -121,6 +123,33 @@ export function EditStepsDialog({ workflow, open, onOpenChange }: { workflow: Wo
                   <Field label="Description">
                     {(id) => <Textarea id={id} rows={2} value={d.description} onChange={(e) => setDraft(s.id, { description: e.target.value })} />}
                   </Field>
+                  {usesAiModel(s, cap) && (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label="AI model provider" hint="Leave on 'Use the workflow's model' unless this step needs a different model.">
+                        {(id) => (
+                          <Select id={id} value={d.aiProvider} onChange={(e) => setDraft(s.id, { aiProvider: e.target.value })}>
+                            <option value="">Use the workflow&apos;s model</option>
+                            {(providers.data ?? []).map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name}
+                              </option>
+                            ))}
+                          </Select>
+                        )}
+                      </Field>
+                      <Field label="Model" hint="Leave empty for the provider's default model.">
+                        {(id) => (
+                          <Input
+                            id={id}
+                            className="font-mono"
+                            value={d.aiModel}
+                            placeholder={(providers.data ?? []).find((p) => p.id === d.aiProvider)?.default_model ?? "provider default"}
+                            onChange={(e) => setDraft(s.id, { aiModel: e.target.value })}
+                          />
+                        )}
+                      </Field>
+                    </div>
+                  )}
                   {s.kind === "approval" && (
                     <Field label="Instructions for the approver">
                       {(id) => <Textarea id={id} rows={2} value={d.instructions} onChange={(e) => setDraft(s.id, { instructions: e.target.value })} />}

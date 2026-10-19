@@ -36,6 +36,9 @@ class PolicyContext:
     department: str | None
     connected: set[str] = field(default_factory=set)  # connector types with a usable connection, incl. "llm"
     departments: set[str] = field(default_factory=set)  # known department codes
+    # Model providers: id -> {"name", "default_model"}; None = not checked (e.g. pure unit tests).
+    providers: dict[str, dict[str, Any]] | None = None
+    default_provider_id: str | None = None
 
 
 @dataclass
@@ -172,6 +175,14 @@ def check_plan(plan: BusinessPlan, ctx: PolicyContext) -> list[Finding]:
                 problem = _check_ref(ref, input_keys, step_ids)
                 if problem:
                     findings.append(Finding("error", "invalid_reference", f"'{step.title}': {problem}", step.id))
+    if ctx.providers is not None:
+        choices = [(None, plan.ai)] + [(s.id, s.ai) for s in plan.steps if isinstance(s, ActionStep)]
+        for step_id, choice in choices:
+            if choice is not None and choice.provider_id and choice.provider_id not in ctx.providers:
+                where = f"'{plan.step(step_id).title}'" if step_id else "This workflow"
+                findings.append(Finding("error", "unknown_model_provider",
+                                        f"{where} uses an AI model provider that no longer exists. Choose another model.",
+                                        step_id))
     if plan.trigger.type == "schedule":
         from croniter import croniter
 

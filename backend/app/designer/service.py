@@ -26,10 +26,18 @@ class DesignerError(RuntimeError):
 
 
 async def designer_provider(session: AsyncSession) -> ModelProvider | None:
+    """Chosen in Model Settings ("AI builder"), else DESIGNER_PROVIDER_NAME, else the default provider."""
+    chosen = (await session.execute(select(ModelProvider).where(ModelProvider.use_for_designer.is_(True)).limit(1))).scalar_one_or_none()
+    if chosen is not None:
+        return chosen
     name = get_settings().designer_provider_name
-    query = select(ModelProvider)
-    query = query.where(ModelProvider.name == name) if name else query.order_by(ModelProvider.created_at)
-    return (await session.execute(query.limit(1))).scalar_one_or_none()
+    if name:
+        named = (await session.execute(select(ModelProvider).where(ModelProvider.name == name).limit(1))).scalar_one_or_none()
+        if named is not None:
+            return named
+    from app.services.execution import default_provider
+
+    return await default_provider(session)
 
 
 async def build_planner(session: AsyncSession) -> Planner:
@@ -41,7 +49,8 @@ async def build_planner(session: AsyncSession) -> Planner:
 
     client = LLMClient(provider.base_url, provider.default_model, provider.api_key_ref, max(provider.timeout_seconds, 120),
                        api_key=await resolve_env(session, provider.api_key_ref))
-    return LlmPlanner(client, temperature=min(provider.temperature, 0.3), max_tokens=max(provider.max_tokens, 4096))
+    # Respect the provider's Max tokens: a forced higher value can exceed the account's credit or limits.
+    return LlmPlanner(client, temperature=min(provider.temperature, 0.3), max_tokens=provider.max_tokens)
 
 
 def _planner_context(pctx: PolicyContext) -> PlannerContext:

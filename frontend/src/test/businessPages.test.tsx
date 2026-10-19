@@ -38,9 +38,9 @@ describe("business helpers", () => {
     const ops = stepEditOperations(
       invoicePlan,
       {
-        check_fields: { title: "Check the invoice", description: "", params: { required_fields: "invoice number, IBAN, VAT id" }, instructions: "", retry: "3" },
-        manager_approval: { title: "Finance manager approval", description: "", params: {}, instructions: "Check amount and IBAN", retry: "" },
-        notify_ap: { title: "Email accounts payable", description: "", params: {}, instructions: "", retry: "" },
+        check_fields: { title: "Check the invoice", description: "", params: { required_fields: "invoice number, IBAN, VAT id" }, instructions: "", retry: "3", aiProvider: "", aiModel: "" },
+        manager_approval: { title: "Finance manager approval", description: "", params: {}, instructions: "Check amount and IBAN", retry: "", aiProvider: "", aiModel: "" },
+        notify_ap: { title: "Email accounts payable", description: "", params: {}, instructions: "", retry: "", aiProvider: "", aiModel: "" },
       },
       [checkFields],
     );
